@@ -1,0 +1,74 @@
+name: runtime-bundle
+
+on:
+  push:
+    branches: ["release/desktop-runtime"]
+    paths: ["control-plane/**", "image/**", "scripts/**", ".github/workflows/runtime-bundle.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: control-plane/go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Test engine and bundle metadata
+        run: |
+          cd control-plane
+          go test ./...
+          go test -race ./internal/authproxy
+          cd ..
+          node --test scripts/runtime-bundle.test.mjs
+      - name: Build images from credential-free tracked source
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          mkdir runtime-source
+          git archive "$SOURCE_SHA" control-plane image | tar -x -C runtime-source
+          docker build --build-arg VERSION=desktop-runtime-preview --build-arg GIT_COMMIT="$SOURCE_SHA" \
+            -t "sandboxd-control-plane:runtime-$SOURCE_SHA" runtime-source/control-plane
+          docker build --build-arg INSTALL_CLAUDE_CODE=false -f runtime-source/image/Dockerfile \
+            -t "sandboxd-base:runtime-$SOURCE_SHA" runtime-source
+          docker pull traefik@sha256:6b9cbca6fac42ab0075f5437d8dc1685cfd188626d8d515839ea94f8b6271c42
+          docker tag traefik@sha256:6b9cbca6fac42ab0075f5437d8dc1685cfd188626d8d515839ea94f8b6271c42 "sandboxd-edge:runtime-$SOURCE_SHA"
+      - name: Real sandbox lifecycle without model credentials
+        env:
+          SANDBOXD_IMAGE: sandboxd-base:runtime-${{ github.sha }}
+          SANDBOXD_BIN: /tmp/sandboxd-runtime-ci
+          SANDBOXD_E2E_NO_CLAUDE: '1'
+        run: |
+          cd control-plane
+          go build -o /tmp/sandboxd-runtime-ci ./cmd/sandboxd
+          cd ..
+          bash scripts/e2e.sh
+      - name: Export checksummed runtime bundle
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: node scripts/runtime-bundle.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sandboxd-runtime-linux-${{ matrix.arch }}
+          path: runtime-dist/*
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0

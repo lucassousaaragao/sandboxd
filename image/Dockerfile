@@ -113,10 +113,13 @@ RUN curl -fsSL https://bun.sh/install | bash -s "bun-v${BUN_VERSION}" \
  && rm -rf /root/.bun
 
 # OpenCode (npm global) + Claude Code (official native installer) + Codex CLI.
+ARG INSTALL_CLAUDE_CODE=true
 RUN npm install -g opencode-ai @openai/codex@0.142.5 \
- && curl -fsSL https://claude.ai/install.sh | bash \
- && cp /root/.local/bin/claude /usr/local/bin/claude \
- && chmod 755 /usr/local/bin/claude
+ && if [ "$INSTALL_CLAUDE_CODE" = true ]; then \
+      curl -fsSL https://claude.ai/install.sh | bash \
+      && cp /root/.local/bin/claude /usr/local/bin/claude \
+      && chmod 755 /usr/local/bin/claude; \
+    elif [ "$INSTALL_CLAUDE_CODE" != false ]; then exit 1; fi
 
 # Registry-proxy config + shell env file. /etc/npmrc and /usr/etc/npmrc
 # both ship the same content; /usr/etc/npmrc is the path Node 20's npm
