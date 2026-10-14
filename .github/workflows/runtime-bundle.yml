@@ -5,6 +5,15 @@ on:
     branches: ["release/desktop-runtime"]
     paths: ["control-plane/**", "image/**", "scripts/**", ".github/workflows/runtime-bundle.yml"]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish a prerelease after both native Linux bundle jobs pass
+        type: boolean
+        default: false
+      tag:
+        description: Maintainer-created runtime-vX.Y.Z-preview.N tag at this exact source
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -72,3 +81,45 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
+
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/release/desktop-runtime'
+    needs: bundle
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sandboxd-runtime-linux-*
+          path: runtime-dist
+          merge-multiple: true
+      - name: Verify source, archive lengths and hashes
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: node scripts/verify-runtime-bundle.mjs runtime-dist
+      - name: Publish only to the pre-created source tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^runtime-v[0-9]+\.[0-9]+\.[0-9]+-preview\.[0-9]+$ ]]
+          TAG_SHA=$(gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')
+          [[ "$TAG_SHA" == "$SOURCE_SHA" ]]
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo 'Release already exists; refusing to replace assets.'
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" --verify-tag --draft --prerelease \
+            --title "Sandboxd local runtime $RELEASE_TAG" \
+            --notes 'Experimental Linux container runtime bundles for Desktop setup, not a standalone desktop installer or a stable engine release. Built and lifecycle-tested natively on Linux ARM64 and x64. macOS/Windows Desktop setup and real provider inference remain unverified. OpenCode and Codex binaries are present but require separately tested authentication; Claude Code and Pi are not installed in this bundle. No production upgrade is implied. Includes the generic provider-error compression fix. Checksums bind the archives; clients must pin them independently before loading. Images are exported without tags to preserve existing installations.'
+          gh release upload "$RELEASE_TAG" runtime-dist/*.tar.gz runtime-dist/manifest-*.json runtime-dist/SHA256SUMS-* runtime-dist/LICENSE
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease
