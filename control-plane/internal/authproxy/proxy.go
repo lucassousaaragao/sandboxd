@@ -128,6 +128,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
 			req.Host = target.Host
+			// Error inspection needs plaintext. Inheriting a CLI's br/gzip
+			// negotiation then rewriting bytes while retaining Content-Encoding
+			// turns an actionable provider failure into a decompression error.
+			req.Header.Set("Accept-Encoding", "identity")
 		},
 		FlushInterval: -1, // stream SSE token-by-token
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
@@ -147,12 +151,30 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if resp.StatusCode < 400 {
 				return nil // success and streaming responses are never touched
 			}
-			raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
-			_ = resp.Body.Close()
-			if err != nil {
-				resp.Body = io.NopCloser(bytes.NewReader(nil))
+			// Some gateways ignore negotiation. Do not decode unsupported
+			// encodings, interpret compressed bytes as JSON, or change their body.
+			encoding := strings.TrimSpace(resp.Header.Get("Content-Encoding"))
+			if encoding != "" && !strings.EqualFold(encoding, "identity") {
 				return nil
 			}
+			const limit = 8 << 10
+			raw, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+			if err != nil {
+				_ = resp.Body.Close()
+				return err // reverse proxy returns 502, never a fabricated empty body
+			}
+			if len(raw) > limit {
+				// Preserve the unread suffix and original length/headers. Limiting
+				// inspection must not silently truncate a provider response.
+				resp.Body = struct {
+					io.Reader
+					io.Closer
+				}{
+					io.MultiReader(bytes.NewReader(raw), resp.Body), resp.Body,
+				}
+				return nil
+			}
+			_ = resp.Body.Close()
 			reason, terminal := terminalProviderError(resp.StatusCode, string(raw))
 			if !terminal {
 				resp.Body = io.NopCloser(bytes.NewReader(raw)) // unchanged
@@ -173,6 +195,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			resp.Body = io.NopCloser(bytes.NewReader(body))
 			resp.ContentLength = int64(len(body))
 			resp.Header = resp.Header.Clone()
+			for _, header := range []string{"Content-Encoding", "ETag", "Content-MD5", "Digest", "Content-Digest", "Trailer"} {
+				resp.Header.Del(header)
+			}
+			resp.Trailer = nil
 			resp.Header.Set("Content-Type", "application/json")
 			resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
 			resp.Header.Del("Retry-After") // nothing to wait for
