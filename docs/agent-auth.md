@@ -226,3 +226,73 @@ Operator knobs for agent auth & task defaults (all optional; sensible defaults s
 
 Per-task, `POST /tasks` also accepts `agent`, `model`, and `continue` (tri-state —
 see [Running a task](#running-a-task)).
+
+## App-scoped provider broker candidate (not enabled)
+
+`internal/provideraccess` is an in-process building block for installed agents
+such as OpenClaw. It starts no daemon/listener, has no Desktop dependencies, and
+is **not wired into the running engine or advertised by `/v1/settings`**. Existing
+coding-agent authentication is unchanged. It is ordinary MIT engine code, not a
+commercial feature or a separate control-plane fork.
+
+The initial provider is Anthropic **API keys only**. A trusted caller supplies
+the authenticated owner's identity, app ID, app-config key and requested TTL to
+`Broker.Issue`. The encrypted config must explicitly allow `runtime_access` or
+`both`; plaintext config, `agent_access` alone, another owner's app, global
+provider connections and subscription credentials do not qualify. The raw
+256-bit delegated token is returned once. Only its SHA-256 digest is stored.
+
+`Broker.ServeHTTP` accepts the delegated token as an SDK API-key header or bearer
+header, not both. It exposes only these fixed-provider operations:
+
+- `POST /apps/{app}/anthropic/v1/messages`
+- `POST /apps/{app}/anthropic/v1/messages/count_tokens`
+- `GET /apps/{app}/anthropic/v1/models`
+
+It checks current app/config ownership, permission and expiration on every
+request, decrypts the provider key inside the control plane, and injects it only
+into the fixed HTTPS Anthropic destination. Caller cookies, forwarded headers,
+credentials and arbitrary URLs are not forwarded. Encoded/noncanonical routes,
+queries and ambiguous auth are rejected. Successful streams pass through; errors
+and redirects become fixed errors. The HTTP transport ignores environment proxy
+settings. Bodies are limited to 8 MiB, authorized concurrency to 16, and the
+upstream exchange to ten minutes. This is not a spending budget or model policy.
+
+Migration `0028_provider_grants.sql` stores grants and uses SQLite triggers to
+revoke them atomically on config update/delete, app deletion or owner change.
+Restoring an old permission or recreating a deleted record cannot revive the
+token. A token lasts at most 24 hours. Restart preserves unexpired grants;
+explicit revocation is owner/app-scoped. Revocation prevents **new requests**,
+not completion of an already authorized stream. A stolen token remains a bearer
+capability for its one app/provider; it is not proof of container identity.
+
+Integration/release requirements still outstanding:
+
+- The existing `authproxy.Proxy.ServeHTTP` shared routes do not require these
+  grants. Merely adding the new handler alongside that proxy leaves a bypass.
+  Managed installations must fence off shared routes and migrate/test existing
+  coding-task credentials before claiming scoped provider isolation.
+- Add owner-authenticated grant lifecycle APIs and safe renewal/delivery through
+  the existing runtime. Never place engine management tokens in agent containers
+  or grant tokens in browser preview URLs. No workload may issue its own grant.
+- Configure listener isolation and request-header/body read deadlines. The
+  handler bounds body size, but its upstream timeout begins after body reading.
+- Add consumer provider-selection/consent, model compatibility, billing/error
+  UX, expired-record cleanup and native restart/recovery tests. A fixed proxy is
+  not an approval broker for an agent's other tools or network access.
+- Reconcile migration numbering with unpublished engine candidates before
+  integration. 0025–0027 are reserved by the existing Desktop runtime candidate;
+  the current migration runner supports gaps and applies 0028 on the clean base.
+
+Tests use real SQLite and encrypted synthetic credentials, plus a local HTTP
+streaming server. They cover ownership, permission changes, expiry, persistence,
+revocation, cross-app denial, route/header filtering, redirects, size/concurrency
+limits, corrupt ciphertext and client cancellation. Run from `control-plane`:
+
+```bash
+go test ./...
+go test -race ./internal/provideraccess ./internal/store ./internal/authproxy
+```
+
+These are not paid model inference, OpenClaw-to-engine integration, native
+Windows/macOS or a security certification. Production is not changed.
