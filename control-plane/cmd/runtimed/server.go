@@ -33,6 +33,8 @@ func serve(ctx context.Context, socketPath string, a *app) error {
 	mux.HandleFunc("POST /tasks/{id}/revert", a.handleRevertTask)
 	mux.HandleFunc("PUT /provider-connection", a.handleProviderConnection)
 	mux.HandleFunc("GET /provider-connection", a.handleProviderConnection)
+	mux.HandleFunc("GET /provider-connection/status", a.handleProviderConnectionStatus)
+	mux.HandleFunc("POST /provider-connection/renew", a.handleProviderConnectionRenewal)
 
 	srv := &http.Server{Handler: mux}
 	go func() {

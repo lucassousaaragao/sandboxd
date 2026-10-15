@@ -141,6 +141,7 @@ func (s *Server) v1GetSettings(w http.ResponseWriter, _ *http.Request) {
 			"config_secrets":            s.Secrets != nil,
 			"scoped_provider_access":    s.ProviderAccess != nil,
 			"runtime_provider_delivery": s.ProviderAccess != nil && s.Loopback != nil && s.Locks != nil && s.AgentProxyURL != "",
+			"runtime_provider_renewal":  s.ProviderAccess != nil && s.Loopback != nil && s.Locks != nil && s.AgentProxyURL != "",
 			"templates":                 s.TemplatesDir != "",
 			"forward_auth":              s.Auth != nil,
 		},

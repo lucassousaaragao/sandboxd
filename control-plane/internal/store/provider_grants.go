@@ -16,6 +16,55 @@ type ProviderGrant struct {
 	CreatedAt, ExpiresAt            time.Time
 }
 
+// RuntimeProviderGrant is non-secret connection metadata. It excludes both the
+// bearer token and its hash and rechecks current ownership, binding and consent.
+func (s *Store) RuntimeProviderGrant(ctx context.Context, owner, appID, sandboxID string, now time.Time) (id string, expiry time.Time, err error) {
+	var unix int64
+	err = s.db.QueryRowContext(ctx, `SELECT g.id, g.expires_at FROM provider_grant g
+		JOIN app a ON a.id = g.app_id AND a.owner_token = g.owner_token
+		JOIN app_config c ON c.id = g.config_id AND c.app_id = a.id
+		JOIN sandbox s ON s.id = g.runtime_sandbox_id AND s.app_id = a.id
+		WHERE g.owner_token = ? AND g.app_id = ? AND g.runtime_sandbox_id = ?
+		AND g.provider = 'anthropic' AND g.expires_at > ? AND s.status = 'running'
+		AND c.sensitive = 1 AND c.value_plaintext IS NULL
+		AND length(c.value_ciphertext) > 0 AND length(c.value_nonce) > 0
+		AND c.access_policy IN ('runtime_access', 'both')`, owner, appID, sandboxID, now.Unix()).Scan(&id, &unix)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = ErrNotFound
+	}
+	if err == nil {
+		expiry = time.Unix(unix, 0).UTC()
+	}
+	return
+}
+
+// RenewRuntimeProviderGrant extends only an existing, still-authorized lease.
+// Compare-and-swap prevents renewal from reviving an expired/replaced grant.
+// Existing atomic config/lifecycle revocation triggers remain authoritative.
+func (s *Store) RenewRuntimeProviderGrant(ctx context.Context, owner, appID, sandboxID, id string, previous, expiry, now time.Time) error {
+	return s.submit(ctx, func(db *sql.DB) error {
+		res, err := db.ExecContext(ctx, `UPDATE provider_grant SET expires_at = ?
+			WHERE id = ? AND owner_token = ? AND app_id = ? AND runtime_sandbox_id = ?
+			AND provider = 'anthropic' AND expires_at = ? AND expires_at > ?
+			AND EXISTS (SELECT 1 FROM app a JOIN app_config c ON c.app_id = a.id
+			  JOIN sandbox s ON s.app_id = a.id
+			  WHERE a.id = provider_grant.app_id AND a.owner_token = provider_grant.owner_token
+			  AND c.id = provider_grant.config_id AND c.sensitive = 1 AND c.value_plaintext IS NULL
+			  AND length(c.value_ciphertext) > 0 AND length(c.value_nonce) > 0
+			  AND c.access_policy IN ('runtime_access', 'both')
+			  AND s.id = provider_grant.runtime_sandbox_id AND s.status = 'running')`,
+			expiry.Unix(), id, owner, appID, sandboxID, previous.Unix(), now.Unix())
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err == nil && n != 1 {
+			return ErrNotFound
+		}
+		return err
+	})
+}
+
 // CreateProviderGrant atomically checks current ownership and runtime consent.
 // Config changes revoke grants in the same transaction (migration 0028).
 func (s *Store) CreateProviderGrant(ctx context.Context, g ProviderGrant, configKey string) error {

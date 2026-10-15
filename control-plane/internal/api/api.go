@@ -311,6 +311,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/apps/{id}/config", s.observe("POST /v1/apps/{id}/config", s.v1CreateAppConfig))
 	mux.HandleFunc("POST /v1/apps/{id}/provider-grants", s.observe("POST /v1/apps/{id}/provider-grants", s.v1CreateProviderGrant))
 	mux.HandleFunc("DELETE /v1/apps/{id}/provider-grants/{grantId}", s.observe("DELETE /v1/apps/{id}/provider-grants/{grantId}", s.v1DeleteProviderGrant))
+	mux.HandleFunc("GET /v1/apps/{id}/provider-connection", s.observe("GET /v1/apps/{id}/provider-connection", s.v1RuntimeProviderConnection))
+	mux.HandleFunc("POST /v1/apps/{id}/provider-connection/renew", s.observe("POST /v1/apps/{id}/provider-connection/renew", s.v1RuntimeProviderConnection))
 	mux.HandleFunc("GET /v1/apps/{id}/runtime-inspect", s.observe("GET /v1/apps/{id}/runtime-inspect", s.v1RuntimeInspect))
 	mux.HandleFunc("POST /v1/runtime/manifest/validate", s.observe("POST /v1/runtime/manifest/validate", s.v1ValidateManifest))
 	mux.HandleFunc("GET /v1/runtime/recipes", s.observe("GET /v1/runtime/recipes", s.v1RuntimeRecipes))

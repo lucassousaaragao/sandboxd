@@ -1060,6 +1060,93 @@ paths:
         "409": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
 
+  /v1/apps/{id}/provider-connection:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      operationId: getRuntimeProviderConnection
+      tags: [apps]
+      summary: Inspect the current privately delivered provider lease without secrets
+      description: >
+        Owner-authenticated management API. Requires runtime_provider_renewal
+        capability and a compatible supervisor. Checks current ownership,
+        config consent, running sandbox binding, private delivery and boot.
+        Does not wake workloads, grant access or change expiry. Expired/revoked
+        access returns provider_denied; a lost/mismatched private connection
+        returns provider_connection_changed. Never returns tokens, hashes or keys.
+      responses:
+        "200":
+          description: Verified current delivery metadata; Cache-Control no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [id, expires_at, provider, runtime_sandbox_id, delivered]
+                properties:
+                  id: { type: string }
+                  expires_at: { type: string, format: date-time }
+                  provider: { type: string, enum: [anthropic] }
+                  runtime_sandbox_id: { type: string }
+                  delivered: { type: boolean, enum: [true] }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+
+  /v1/apps/{id}/provider-connection/renew:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    post:
+      operationId: renewRuntimeProviderConnection
+      tags: [apps]
+      summary: Extend an existing delivered lease without rotating credentials or restarting an agent
+      description: >
+        Requires owner authentication, runtime_provider_renewal and a compatible
+        supervisor. The caller must supply the exact existing grant and current
+        running sandbox. Revalidates ownership and runtime consent atomically;
+        cannot revive expired, revoked or replaced access. Preserves the token
+        and its ID, updates expiry in the broker and current supervisor boot,
+        never shortens existing access and never returns secrets. Maximum lease
+        is 24 hours from renewal. Workload credentials cannot call this API.
+        Unconfirmed private renewal revokes the grant, even after cancellation.
+        Do not automatically create replacement access after a denied renewal.
+        In-flight requests may finish after revocation. No scheduler is created.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [id, runtime_sandbox_id, ttl_seconds]
+              properties:
+                id: { type: string, minLength: 1, maxLength: 128 }
+                runtime_sandbox_id: { type: string, minLength: 1 }
+                ttl_seconds: { type: integer, minimum: 60, maximum: 86400 }
+      responses:
+        "200":
+          description: Renewed delivery metadata; same schema as GET provider-connection, Cache-Control no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [id, expires_at, provider, runtime_sandbox_id, delivered]
+                properties:
+                  id: { type: string }
+                  expires_at: { type: string, format: date-time }
+                  provider: { type: string, enum: [anthropic] }
+                  runtime_sandbox_id: { type: string }
+                  delivered: { type: boolean, enum: [true] }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+
   /v1/apps/{id}/provider-grants/{grantId}:
     parameters:
       - $ref: "#/components/parameters/Id"

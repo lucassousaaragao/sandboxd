@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -22,6 +23,48 @@ type ProviderConnection struct {
 	Token     string    `json:"token"`
 	ExpiresAt time.Time `json:"expires_at"`
 	BootedAt  time.Time `json:"booted_at"`
+}
+
+// ProviderConnectionStatus omits tokens, hashes and provider URLs. It is only
+// served over the private supervisor socket, not the ordinary status response.
+type ProviderConnectionStatus struct {
+	ID        string    `json:"id"`
+	ExpiresAt time.Time `json:"expires_at"`
+	BootedAt  time.Time `json:"booted_at"`
+}
+
+type ProviderConnectionRenewal struct {
+	ProviderConnectionStatus
+	PreviousExpiresAt time.Time `json:"previous_expires_at"`
+}
+
+func (c *Client) ProviderConnectionStatus(ctx context.Context) (ProviderConnectionStatus, error) {
+	resp, err := c.do(ctx, c.http, http.MethodGet, "http://runtimed/provider-connection/status", nil)
+	if err != nil {
+		return ProviderConnectionStatus{}, errors.New("provider connection status unavailable")
+	}
+	defer resp.Body.Close()
+	var status ProviderConnectionStatus
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&status) != nil {
+		return ProviderConnectionStatus{}, errors.New("provider connection status unavailable")
+	}
+	return status, nil
+}
+
+func (c *Client) RenewProviderConnection(ctx context.Context, p ProviderConnectionRenewal) error {
+	body, err := json.Marshal(p)
+	if err != nil {
+		return errors.New("invalid provider renewal")
+	}
+	resp, err := c.do(ctx, c.http, http.MethodPost, "http://runtimed/provider-connection/renew", body)
+	if err != nil {
+		return errors.New("provider renewal unavailable")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return errors.New("provider renewal rejected")
+	}
+	return nil
 }
 
 var providerPath = regexp.MustCompile(`^/apps/[A-Za-z0-9_-]{1,128}/anthropic$`)

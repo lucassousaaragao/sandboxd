@@ -281,6 +281,7 @@ func (a *app) status() runtime.Status {
 	return runtime.Status{
 		ScopedProviderTasks:      true,
 		ScopedProviderConnection: true,
+		ScopedProviderRenewal:    true,
 		Runtimed: runtime.RuntimedInfo{
 			Version:  version,
 			BootedAt: a.bootedAt,

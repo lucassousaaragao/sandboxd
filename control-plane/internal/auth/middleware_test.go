@@ -146,6 +146,12 @@ func TestMiddlewareScopedKey(t *testing.T) {
 		{"GET", "/v1/apps", "upg-key", 403},
 		{"GET", "/v1/api-keys", "upg-key", 403},
 		{"GET", "/v1/apps", "full-key", 200},
+		{"GET", "/v1/apps/x/provider-connection", "upg-key", 403},
+		{"POST", "/v1/apps/x/provider-connection/renew", "upg-key", 403},
+		{"GET", "/v1/apps/x/provider-connection", "", 401},
+		{"POST", "/v1/apps/x/provider-connection/renew", "", 401},
+		{"POST", "/v1/apps/x/provider-connection/renew", "workload-grant", 401},
+		{"POST", "/v1/apps/x/provider-connection/renew", "full-key", 200},
 	}
 	for _, tc := range cases {
 		var seen Actor

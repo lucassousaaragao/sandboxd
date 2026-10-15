@@ -45,6 +45,7 @@ type Status struct {
 	// checks this before delivering scoped task capabilities.
 	ScopedProviderTasks      bool         `json:"scoped_provider_tasks,omitempty"`
 	ScopedProviderConnection bool         `json:"scoped_provider_connection,omitempty"`
+	ScopedProviderRenewal    bool         `json:"scoped_provider_renewal,omitempty"`
 	Runtimed                 RuntimedInfo `json:"runtimed"`
 	Preview                  PreviewState `json:"preview"`
 	// Processes lists every supervised process (the web process and any

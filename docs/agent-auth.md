@@ -252,9 +252,10 @@ The authenticated management API adds:
   revocation. Neither operation is exposed on the workload listener.
 
 There is no raw credential read endpoint and no grant-list endpoint that can
-recover a token. Renewing an installed agent's token requires the trusted
-controller to issue and deliver a replacement; automatic renewal is not yet
-implemented. Never hand management API credentials to an installed agent.
+recover a token. The optional renewal API below can extend an unexpired delivered
+lease without rotating its token. Scheduling is the trusted client's job; the
+engine starts no renewal daemon. Never hand management API credentials to an
+installed agent.
 
 The initial provider is Anthropic **API keys only**. A trusted caller supplies
 the authenticated owner's identity, app ID, app-config key and requested TTL to
@@ -282,7 +283,9 @@ upstream exchange to ten minutes. This is not a spending budget or model policy.
 Migration `0028_provider_grants.sql` stores grants and uses SQLite triggers to
 revoke them atomically on config update/delete, app deletion or owner change.
 Restoring an old permission or recreating a deleted record cannot revive the
-token. A token lasts at most 24 hours. Restart preserves unexpired grants;
+token. A newly issued or renewed lease lasts at most 24 hours from that operation.
+Repeated owner-authorized renewal can keep the same token valid longer; revoke
+or replace it if compromise is suspected. Restart preserves unexpired grants;
 explicit revocation is owner/app-scoped. Revocation prevents **new requests**,
 not completion of an already authorized stream. A stolen token remains a bearer
 capability for its one app/provider; it is not proof of container identity.
@@ -329,6 +332,44 @@ Tests cover real SQLite rotation and lifecycle triggers, wrong-owner/target,
 stopped/busy/old runtime rejection, a real Unix socket, lost responses, sanitized
 runtime errors, token-free receipts/status, expiry and boot-change rejection.
 Consumer installer/launcher integration and renewal remain required.
+
+### Non-disruptive delivered-connection renewal (development)
+
+`capabilities.runtime_provider_renewal` advertises two additional management
+operations. The selected supervisor must separately advertise
+`scoped_provider_renewal`; older supervisors are rejected before any mutation.
+
+- `GET /v1/apps/{id}/provider-connection` verifies the current running sandbox,
+  ownership, config consent, database lease and supervisor boot/connection.
+  Returns only `{id, expires_at, provider, runtime_sandbox_id, delivered:true}`
+  with `Cache-Control: no-store`. It never starts a workload or reads a raw token.
+- `POST /v1/apps/{id}/provider-connection/renew` takes the exact existing `id`,
+  `runtime_sandbox_id` and `ttl_seconds` (60–86400). It extends that still-valid
+  lease using an atomic ownership/permission/binding/expiry check, then updates
+  the same in-memory supervisor connection. The token, ID, URL and stored token
+  hash do not change. Existing revocation triggers remain authoritative.
+
+This prevents a routine renewal from requiring an agent SDK credential reload
+or process restart. A launcher must observe refreshed expiry for the same
+connection instead of terminating at its original deadline. There is no new
+schema, background worker, Electron dependency or default-mode change.
+
+Renewal cannot revive expired, explicitly revoked, permission-changed, rotated,
+stopped or rebound access. A supervisor restart loses its private connection
+and requires explicit delivery again. Unknown or unconfirmed private renewal
+revokes the extended lease under an independent timeout even if the management
+request was cancelled; failure to confirm that revocation is reported as
+`provider_revoke_pending`. Do not automatically issue replacement access after
+these failures. Already-authorized model streams can still finish.
+
+The existing same-sandbox Unix socket also exposes non-secret status and an
+expiry-update operation. A workload can change its local expiry hint but cannot
+change broker authorization: management credentials never enter the sandbox,
+and every provider request still checks the database's expiry and consent.
+Lease metadata is excluded from ordinary supervisor status. Cross-app/owner,
+stale expiry, boot changes, malformed bodies, lost responses, cancellation and
+revocation are covered by SQLite/Unix-socket tests. This development extension
+is not yet in a published runtime bundle or connected to Desktop's scheduler.
 
 The opt-in real OpenClaw probe also passed with a newly compiled `runtimed`
 binary supplied via `SANDBOXD_OPENCLAW_RUNTIMED_BINARY` to the Desktop harness.
