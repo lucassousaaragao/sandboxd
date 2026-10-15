@@ -43,9 +43,10 @@ const (
 type Status struct {
 	// Additive internal contract; absent on older supervisors. The controller
 	// checks this before delivering scoped task capabilities.
-	ScopedProviderTasks bool         `json:"scoped_provider_tasks,omitempty"`
-	Runtimed            RuntimedInfo `json:"runtimed"`
-	Preview             PreviewState `json:"preview"`
+	ScopedProviderTasks      bool         `json:"scoped_provider_tasks,omitempty"`
+	ScopedProviderConnection bool         `json:"scoped_provider_connection,omitempty"`
+	Runtimed                 RuntimedInfo `json:"runtimed"`
+	Preview                  PreviewState `json:"preview"`
 	// Processes lists every supervised process (the web process and any
 	// workers from sandbox.yaml). Empty on older runtimed builds. The web
 	// process's preview health is also surfaced in Preview for compatibility.

@@ -1016,6 +1016,11 @@ paths:
         opaque token once; never returns the provider credential. Capability
         scoped_provider_access must be true. Anthropic API keys only, not OAuth.
         Config changes, app deletion and explicit revocation invalidate the grant.
+        With runtime_sandbox_id, requires runtime_provider_delivery and the app's
+        current running sandbox. Delivers over the private runtime socket and
+        returns metadata only (no token or base_path). Replaces that sandbox's
+        previous delivered grant; stopping/deleting/rebinding it revokes delivery.
+        Older runtime supervisors are refused before issuing a grant.
       requestBody:
         required: true
         content:
@@ -1028,24 +1033,31 @@ paths:
                 provider: { type: string, enum: [anthropic] }
                 config_key: { type: string, minLength: 1, maxLength: 256 }
                 ttl_seconds: { type: integer, minimum: 60, maximum: 86400 }
+                runtime_sandbox_id: { type: string, minLength: 1, description: Optional private delivery target; must be the current running sandbox of this app }
       responses:
         "201":
-          description: One-time bearer capability; Cache-Control no-store
+          description: One-time bearer capability, or private-delivery receipt; Cache-Control no-store
           content:
             application/json:
               schema:
                 type: object
-                required: [id, token, expires_at, provider, base_path]
+                required: [id, expires_at, provider]
+                oneOf:
+                  - required: [token, base_path]
+                  - required: [runtime_sandbox_id, delivered]
                 properties:
                   id: { type: string }
                   token: { type: string, description: Sensitive delegated token; never log or place in preview URLs }
                   expires_at: { type: string, format: date-time }
                   provider: { type: string, enum: [anthropic] }
                   base_path: { type: string, description: Relative to the internal workload proxy, not the management API }
+                  runtime_sandbox_id: { type: string }
+                  delivered: { type: boolean, enum: [true] }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
 
   /v1/apps/{id}/provider-grants/{grantId}:

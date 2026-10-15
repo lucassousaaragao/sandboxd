@@ -57,6 +57,19 @@ type Grant struct {
 // owner must be the authenticated actor. This does not grant access to global
 // provider connections, OAuth credentials, or a Claude subscription.
 func (b *Broker) Issue(ctx context.Context, owner, appID, configKey, provider string, ttl time.Duration) (Grant, error) {
+	return b.issue(ctx, owner, appID, configKey, provider, "", ttl)
+}
+
+// IssueRuntime replaces the sandbox's previous delivered grant atomically. The
+// store checks current app ownership, consent and running sandbox binding.
+func (b *Broker) IssueRuntime(ctx context.Context, owner, appID, configKey, provider, sandboxID string, ttl time.Duration) (Grant, error) {
+	if !identifier(sandboxID) {
+		return Grant{}, ErrDenied
+	}
+	return b.issue(ctx, owner, appID, configKey, provider, sandboxID, ttl)
+}
+
+func (b *Broker) issue(ctx context.Context, owner, appID, configKey, provider, sandboxID string, ttl time.Duration) (Grant, error) {
 	if owner == "" || !identifier(appID) || configKey == "" || provider != "anthropic" || ttl < time.Minute || ttl > 24*time.Hour {
 		return Grant{}, ErrDenied
 	}
@@ -67,7 +80,7 @@ func (b *Broker) Issue(ctx context.Context, owner, appID, configKey, provider st
 	now := b.now().UTC().Truncate(time.Second)
 	g := Grant{ID: base64.RawURLEncoding.EncodeToString(entropy[:16]), Token: base64.RawURLEncoding.EncodeToString(entropy[16:]), ExpiresAt: now.Add(ttl).Truncate(time.Second)}
 	hash := sha256.Sum256([]byte(g.Token))
-	err := b.store.CreateProviderGrant(ctx, store.ProviderGrant{ID: g.ID, AppID: appID, OwnerToken: owner, Provider: provider, TokenHash: hash[:], CreatedAt: now, ExpiresAt: g.ExpiresAt}, configKey)
+	err := b.store.CreateProviderGrant(ctx, store.ProviderGrant{ID: g.ID, AppID: appID, OwnerToken: owner, Provider: provider, RuntimeSandboxID: sandboxID, TokenHash: hash[:], CreatedAt: now, ExpiresAt: g.ExpiresAt}, configKey)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return Grant{}, ErrDenied

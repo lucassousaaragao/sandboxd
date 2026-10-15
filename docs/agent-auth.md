@@ -287,6 +287,57 @@ explicit revocation is owner/app-scoped. Revocation prevents **new requests**,
 not completion of an already authorized stream. A stolen token remains a bearer
 capability for its one app/provider; it is not proof of container identity.
 
+### Private delivery for installed-agent launchers
+
+An authenticated controller can add `runtime_sandbox_id` to the existing grant
+request. `capabilities.runtime_provider_delivery` advertises the control-plane
+path; the runtime must separately advertise `scoped_provider_connection`.
+The target must be the app's current **running** sandbox. This operation neither
+wakes workloads nor invokes a model. It serializes with existing sandbox lifecycle
+locks and rechecks ownership/consent/running binding atomically during issuance.
+
+The response is `{id, expires_at, provider, runtime_sandbox_id, delivered:true}`,
+**without the token**. The controller sends it directly over the existing runtime
+Unix socket. The supervisor retains the connection only in memory. Its local
+`GET /provider-connection` returns `{id, base_url, token, expires_at, booted_at}`
+to an installed-agent launcher in that sandbox; this is not a public `/v1` route.
+Delivery validates the operator-configured proxy, bounded token/route/expiry and
+the exact supervisor boot timestamp. No file, subprocess argument or public
+status field receives the token from the delivery implementation.
+
+All processes under the sandbox UID can read or replace this local memory slot;
+it is not an isolation boundary within a sandbox. Only the control-plane broker
+can issue usable tokens. Agents can still disclose their own delegated capability,
+and launchers must keep it out of project files, logs and preview URLs. This is
+not a guarantee against an agent deliberately persisting or emitting it.
+
+Migration 0030 binds delivered grants to sandbox lifecycle. Reconnection replaces
+the sandbox's previous delivered grant in the same transaction. Stop, deletion
+or app rebinding revokes it; original caller-returned grants retain their existing
+semantics. Failed or ambiguous delivery attempts revoke the new grant using a
+separate bounded context, even if the management caller disconnected. Failure to
+confirm revocation returns `provider_revoke_pending`, never a success receipt.
+
+Supervisor restart discards the memory slot. A new explicit delivery is required;
+there is no automatic renewal or background daemon. An unobserved supervisor
+crash does not itself change the database status: an already copied token remains
+usable until revocation, replacement or its TTL. Stopping the sandbox via the
+engine revokes it. Revocation denies new provider requests, not in-flight streams.
+Memory delivery alone does not reload an already running agent's SDK config.
+
+Tests cover real SQLite rotation and lifecycle triggers, wrong-owner/target,
+stopped/busy/old runtime rejection, a real Unix socket, lost responses, sanitized
+runtime errors, token-free receipts/status, expiry and boot-change rejection.
+Consumer installer/launcher integration and renewal remain required.
+
+The opt-in real OpenClaw probe also passed with a newly compiled `runtimed`
+binary supplied via `SANDBOXD_OPENCLAW_RUNTIMED_BINARY` to the Desktop harness.
+It delivers to the real supervisor, reads the connection over its Unix socket,
+then completes two gateway boots and tool/stream cycles through the actual
+broker. The helper puts its temporary agent configuration on container tmpfs,
+not in the project. Model responses are synthetic and the management API is
+tested separately; this is not a full consumer install or native OS test.
+
 ### Existing coding tasks in scoped mode
 
 `v1SubmitTask` verifies the owning app before waking it and issues a separate
@@ -336,7 +387,8 @@ Integration/release requirements still outstanding:
   gateway is unit/integration-tested, not yet tested with real CLI/provider
   traffic in a complete managed installation. Older runtimed binaries are
   refused by the scoped task preflight and must be updated explicitly.
-- Complete safe installed-agent renewal/delivery and preview authentication.
+- Integrate private runtime delivery into the installed-agent launcher and complete
+  automatic renewal and preview authentication.
   Never place engine management tokens in agent containers or grant tokens in
   browser preview URLs. No workload may issue its own grant.
 - Add consumer provider-selection/consent, model compatibility, billing/error

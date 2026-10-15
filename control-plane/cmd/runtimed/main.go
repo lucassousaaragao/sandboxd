@@ -45,8 +45,10 @@ type app struct {
 	lastAssetErr string // entry-asset compile error, "" when assets transform
 	lastChecked  time.Time
 
-	taskMu sync.Mutex // guards task; serializes start (one task at a time)
-	task   *task      // the current / last task, or nil
+	taskMu     sync.Mutex // guards task; serializes start (one task at a time)
+	task       *task      // the current / last task, or nil
+	providerMu sync.Mutex
+	provider   *runtime.ProviderConnection // memory only; never included in status/checkpoints
 }
 
 func main() {
@@ -277,7 +279,8 @@ func (a *app) status() runtime.Status {
 	}
 
 	return runtime.Status{
-		ScopedProviderTasks: true,
+		ScopedProviderTasks:      true,
+		ScopedProviderConnection: true,
 		Runtimed: runtime.RuntimedInfo{
 			Version:  version,
 			BootedAt: a.bootedAt,

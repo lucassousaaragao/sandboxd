@@ -11,6 +11,7 @@ import (
 // must come from the authenticated control-plane actor, never a workload.
 type ProviderGrant struct {
 	ID, AppID, OwnerToken, Provider string
+	RuntimeSandboxID                string // optional; one delivered connection per sandbox
 	TokenHash                       []byte
 	CreatedAt, ExpiresAt            time.Time
 }
@@ -19,16 +20,23 @@ type ProviderGrant struct {
 // Config changes revoke grants in the same transaction (migration 0028).
 func (s *Store) CreateProviderGrant(ctx context.Context, g ProviderGrant, configKey string) error {
 	return s.submit(ctx, func(db *sql.DB) error {
-		res, err := db.ExecContext(ctx, `INSERT INTO provider_grant
-			(id, app_id, config_id, owner_token, provider, token_hash, created_at, expires_at)
-			SELECT ?, a.id, c.id, a.owner_token, ?, ?, ?, ?
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		res, err := tx.ExecContext(ctx, `INSERT INTO provider_grant
+			(id, app_id, config_id, owner_token, provider, token_hash, created_at, expires_at, runtime_sandbox_id)
+			SELECT ?, a.id, c.id, a.owner_token, ?, ?, ?, ?, NULLIF(?, '')
 			FROM app a JOIN app_config c ON c.app_id = a.id
 			WHERE a.id = ? AND a.owner_token = ? AND c.key = ?
 			AND c.sensitive = 1 AND c.value_plaintext IS NULL
 			AND length(c.value_ciphertext) > 0 AND length(c.value_nonce) > 0
-			AND c.access_policy IN ('runtime_access', 'both')`,
-			g.ID, g.Provider, g.TokenHash, g.CreatedAt.Unix(), g.ExpiresAt.Unix(),
-			g.AppID, g.OwnerToken, configKey)
+			AND c.access_policy IN ('runtime_access', 'both')
+			AND (? = '' OR EXISTS (SELECT 1 FROM sandbox s
+			  WHERE s.id = ? AND s.app_id = a.id AND s.status = 'running'))`,
+			g.ID, g.Provider, g.TokenHash, g.CreatedAt.Unix(), g.ExpiresAt.Unix(), g.RuntimeSandboxID,
+			g.AppID, g.OwnerToken, configKey, g.RuntimeSandboxID, g.RuntimeSandboxID)
 		if err != nil {
 			return err
 		}
@@ -36,7 +44,17 @@ func (s *Store) CreateProviderGrant(ctx context.Context, g ProviderGrant, config
 		if err == nil && n == 0 {
 			return ErrNotFound
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		if g.RuntimeSandboxID != "" {
+			// Renewal cannot accumulate live credentials. In-flight requests may
+			// finish; every new request with an older token is denied immediately.
+			if _, err = tx.ExecContext(ctx, `DELETE FROM provider_grant WHERE runtime_sandbox_id = ? AND id != ?`, g.RuntimeSandboxID, g.ID); err != nil {
+				return err
+			}
+		}
+		return tx.Commit()
 	})
 }
 
@@ -49,7 +67,9 @@ func (s *Store) ProviderGrantSecret(ctx context.Context, appID, provider string,
 		JOIN app_config c ON c.id = g.config_id AND c.app_id = a.id
 		WHERE g.app_id = ? AND g.provider = ? AND g.token_hash = ? AND g.expires_at > ?
 		AND c.sensitive = 1 AND c.value_plaintext IS NULL
-		AND c.access_policy IN ('runtime_access', 'both')`, appID, provider, hash, now.Unix()).Scan(&ciphertext, &nonce)
+		AND c.access_policy IN ('runtime_access', 'both')
+		AND (g.runtime_sandbox_id IS NULL OR EXISTS (SELECT 1 FROM sandbox s
+		 WHERE s.id = g.runtime_sandbox_id AND s.app_id = a.id AND s.status = 'running'))`, appID, provider, hash, now.Unix()).Scan(&ciphertext, &nonce)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = ErrNotFound
 	}
