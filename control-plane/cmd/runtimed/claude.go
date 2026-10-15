@@ -206,7 +206,7 @@ func (c *claudeCodeAgent) run(ctx context.Context, spec agentSpec, emit eventSin
 	// Scrub secret-shaped vars and point HOME at THIS agent's mounted auth dir
 	// (/run/agent-auth/claude-code = the imported Claude creds), keyed on the
 	// agent name so it works even when the sandbox default is opencode.
-	cmd.Env = agentEnv(c.name(), spec.env)
+	cmd.Env = scopedAgentEnv(c.name(), spec.env, spec.proxyToken)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	stdout, err := cmd.StdoutPipe()

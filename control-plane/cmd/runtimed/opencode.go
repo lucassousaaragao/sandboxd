@@ -20,11 +20,13 @@ import (
 
 // agentSpec is the input to an agent adapter run.
 type agentSpec struct {
-	workDir string
-	prompt  string
-	model   string // per-task model (agent CLI --model); empty = agent default
-	env     map[string]string
-	rawLog  io.Writer // the agent's own diagnostics (stderr)
+	workDir       string
+	prompt        string
+	model         string // per-task model (agent CLI --model); empty = agent default
+	env           map[string]string
+	proxyToken    string
+	proxyUpstream string
+	rawLog        io.Writer // the agent's own diagnostics (stderr)
 	// systemPrompt is the rendered platform briefing (agentprompt.Render). Each
 	// adapter delivers it in its own supported way (claude: --append-system-prompt;
 	// opencode/codex: a preamble on the user prompt). Empty = inject nothing.
@@ -295,6 +297,10 @@ func ipBaseURL(raw string) (string, error) {
 // Returns ("","",nil) when no proxy is configured — the caller then falls back to
 // opencode's own auth/model handling.
 func writeOpencodeProxyConfig(model string) (string, string, error) {
+	return writeTaskOpencodeProxyConfig(model, "", "")
+}
+
+func writeTaskOpencodeProxyConfig(model, taskToken, taskUpstream string) (string, string, error) {
 	proxy := strings.TrimRight(os.Getenv("RUNTIMED_ANTHROPIC_PROXY"), "/")
 	if proxy == "" {
 		return "", "", nil
@@ -311,14 +317,21 @@ func writeOpencodeProxyConfig(model string) (string, string, error) {
 	if id == "" {
 		id = defaultProxyModel
 	}
+	key, upstream := dummyKey, opencodeUpstream(id)
+	if taskToken != "" {
+		if taskUpstream != "zen" && taskUpstream != "zengo" && taskUpstream != "minimax" && taskUpstream != "minimax-cn" {
+			return "", "", fmt.Errorf("invalid scoped task upstream")
+		}
+		key, upstream = taskToken, taskUpstream
+	}
 	cfg := map[string]any{
 		"provider": map[string]any{
 			"proxy": map[string]any{
 				"npm":  "@ai-sdk/openai-compatible",
 				"name": "proxy",
 				"options": map[string]any{
-					"baseURL": base + "/opencode/" + opencodeUpstream(id),
-					"apiKey":  dummyKey,
+					"baseURL": base + "/opencode/" + upstream,
+					"apiKey":  key,
 				},
 				"models": map[string]any{id: map[string]any{"name": id}},
 			},
@@ -348,7 +361,7 @@ func (o *opencodeAgent) run(ctx context.Context, spec agentSpec, emit eventSink)
 	// file: a custom openai-compatible "proxy" provider carrying a dummy key (the
 	// proxy injects the real one). When it applies, the model is rewritten to
 	// `proxy/<id>` so the run uses that provider. No credential enters the sandbox.
-	cfgPath, proxyModel, cfgErr := writeOpencodeProxyConfig(model)
+	cfgPath, proxyModel, cfgErr := writeTaskOpencodeProxyConfig(model, spec.proxyToken, spec.proxyUpstream)
 	if cfgErr != nil {
 		return "", usage, fmt.Errorf("configure opencode proxy: %w", cfgErr)
 	}
@@ -376,7 +389,7 @@ func (o *opencodeAgent) run(ctx context.Context, spec agentSpec, emit eventSink)
 	// Phase 10B — scrub secret-shaped vars and point HOME at THIS agent's
 	// mounted auth dir (/run/agent-auth/opencode), if any. Credentials come from
 	// files under HOME, never from inherited container env.
-	cmd.Env = agentEnv(o.name(), spec.env)
+	cmd.Env = scopedAgentEnv(o.name(), spec.env, spec.proxyToken)
 	if cfgPath != "" {
 		cmd.Env = append(cmd.Env, "OPENCODE_CONFIG="+cfgPath)
 	}

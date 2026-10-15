@@ -79,6 +79,7 @@ services:
       # Default coding agent for tasks that don't specify one. Explicit
       # agent:"claude-code" tasks work regardless (creds are mounted per provider).
       SANDBOXD_DEFAULT_AGENT: ${SANDBOXD_DEFAULT_AGENT:-opencode}
+      SANDBOXD_PROVIDER_ACCESS_MODE: ${SANDBOXD_PROVIDER_ACCESS_MODE:-legacy}
       # Anonymous telemetry (docs/telemetry.md). Opt out with SANDBOXD_TELEMETRY=off
       # or DO_NOT_TRACK=1 in .env; point at your own collector with the two below.
       SANDBOXD_TELEMETRY: ${SANDBOXD_TELEMETRY:-}

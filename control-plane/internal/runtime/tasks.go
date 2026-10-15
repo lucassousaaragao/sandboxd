@@ -49,6 +49,10 @@ type StartTaskRequest struct {
 	// nil (omitted) = the default, which is to continue when the sandbox already
 	// has a prior session and start fresh otherwise; true/false force the choice.
 	Continue *bool `json:"continue,omitempty"`
+	// Internal controller-to-runtimed capabilities; never accepted by public
+	// task submission or returned in task status/results.
+	ProxyToken    string `json:"proxy_token,omitempty"`
+	ProxyUpstream string `json:"proxy_upstream,omitempty"`
 }
 
 // Event is one task progress event. Data is type-specific JSON.

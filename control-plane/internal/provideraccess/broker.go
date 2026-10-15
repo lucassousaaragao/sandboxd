@@ -1,6 +1,6 @@
 // Package provideraccess provides an in-process, app-scoped API-key broker.
-// It starts no listener and has no Electron dependency. It is not yet wired
-// into sandboxd: the legacy shared proxy must be fenced off before rollout.
+// It starts no listener and has no Electron dependency. sandboxd's opt-in
+// scoped mode wires it beside a grant-enforcing CLI proxy, never a legacy proxy.
 package provideraccess
 
 import (
@@ -196,7 +196,11 @@ func (b *Broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return errors.New("provider rejected request")
 			}
 			contentType := resp.Header.Get("Content-Type")
+			encoding := resp.Header.Get("Content-Encoding")
 			resp.Header = http.Header{"Content-Type": {contentType}, "Cache-Control": {"no-store"}, "X-Content-Type-Options": {"nosniff"}}
+			if encoding != "" {
+				resp.Header.Set("Content-Encoding", encoding)
+			}
 			resp.Trailer = nil
 			return nil
 		},

@@ -19,6 +19,7 @@ package authproxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -29,6 +30,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/agentauth"
 )
@@ -70,8 +72,11 @@ func isMiniMaxUpstream(up string) bool {
 
 // Proxy injects the real provider credential into forwarded requests.
 type Proxy struct {
-	store *agentauth.Store
-	log   *slog.Logger
+	store     *agentauth.Store
+	log       *slog.Logger
+	authorize func(*http.Request, string, string) bool
+	transport http.RoundTripper
+	active    chan struct{}
 }
 
 // New builds the proxy over the agent-auth store (which holds every provider's
@@ -81,6 +86,25 @@ func New(store *agentauth.Store, log *slog.Logger) *Proxy {
 		return nil
 	}
 	return &Proxy{store: store, log: log}
+}
+
+// NewScoped preserves the CLI credential adapters but requires a task grant
+// before any credential lookup. A nil authorizer fails closed, never legacy.
+func NewScoped(store *agentauth.Store, log *slog.Logger, authorize func(*http.Request, string, string) bool) *Proxy {
+	p := New(store, log)
+	if p == nil {
+		return nil
+	}
+	if authorize == nil {
+		authorize = func(*http.Request, string, string) bool { return false }
+	}
+	p.authorize = authorize
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.Proxy = nil
+	t.ResponseHeaderTimeout = 60 * time.Second
+	p.transport = t
+	p.active = make(chan struct{}, 16)
+	return p
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -96,6 +120,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agent, up := segs[0], segs[1]
+	if p.authorize != nil && !p.authorize(r, agent, up) {
+		w.Header().Set("Cache-Control", "no-store")
+		http.Error(w, "provider task authorization required", http.StatusUnauthorized)
+		return
+	}
 	// MiniMax direct endpoints are credential-only — never rewrite them to the
 	// opencode free-tier path (a MiniMax request needs the connected MiniMax key,
 	// never Zen's keyless free models).
@@ -111,6 +140,36 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown upstream: "+up, http.StatusBadRequest)
 		return
 	}
+	if p.authorize != nil {
+		select {
+		case p.active <- struct{}{}:
+			defer func() { <-p.active }()
+		default:
+			http.Error(w, "provider busy", 429)
+			return
+		}
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 8<<20))
+		if err != nil {
+			http.Error(w, "provider request too large", 413)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+		defer cancel()
+		r = r.WithContext(ctx)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		r.ContentLength = int64(len(body))
+		r.Trailer = nil
+		// Only SDK protocol metadata survives. In particular, the capability is
+		// never sent upstream, including keyless Zen, and Connection cannot strip
+		// the credential injected after this allowlist.
+		headers := make(http.Header)
+		for _, key := range []string{"Content-Type", "Accept", "Anthropic-Version", "Anthropic-Beta"} {
+			if value := r.Header.Get(key); value != "" {
+				headers.Set(key, value)
+			}
+		}
+		r.Header = headers
+	}
 	inject, ok := p.credFor(agent, up)
 	if !ok {
 		// No usable/proxyable credential — a clear 401 so the task reads
@@ -124,6 +183,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r.URL.RawPath = ""
 	inject(r.Header)
 	rp := &httputil.ReverseProxy{
+		Transport: p.transport,
 		Director: func(req *http.Request) {
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
@@ -135,7 +195,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 		FlushInterval: -1, // stream SSE token-by-token
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
-			if p.log != nil {
+			if p.log != nil && p.authorize == nil {
 				p.log.Warn("authproxy: upstream error", "upstream", up, "err", err.Error())
 			}
 			http.Error(w, "upstream error", http.StatusBadGateway)
@@ -148,6 +208,23 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// seconds with the provider's own words. Transient rate limits are
 		// passed through untouched so normal backoff still works.
 		ModifyResponse: func(resp *http.Response) error {
+			if p.authorize != nil {
+				if resp.StatusCode >= 300 {
+					_ = resp.Body.Close()
+					resp.Body = io.NopCloser(strings.NewReader(`{"error":{"message":"provider request rejected; check the connection and model"}}`))
+					resp.StatusCode = http.StatusBadRequest
+					resp.Status = "400 Bad Request"
+					resp.ContentLength = -1
+					resp.Header = http.Header{"Content-Type": {"application/json"}}
+				}
+				encoding := resp.Header.Get("Content-Encoding")
+				resp.Header = http.Header{"Content-Type": {resp.Header.Get("Content-Type")}, "Cache-Control": {"no-store"}, "X-Content-Type-Options": {"nosniff"}}
+				if encoding != "" {
+					resp.Header.Set("Content-Encoding", encoding)
+				}
+				resp.Trailer = nil
+				return nil
+			}
 			if resp.StatusCode < 400 {
 				return nil // success and streaming responses are never touched
 			}
@@ -204,6 +281,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			resp.Header.Del("Retry-After") // nothing to wait for
 			return nil
 		},
+	}
+	if p.authorize != nil {
+		forward := rp.Director
+		rp.Director = nil
+		rp.Rewrite = func(pr *httputil.ProxyRequest) { forward(pr.Out) }
 	}
 	rp.ServeHTTP(w, r)
 }

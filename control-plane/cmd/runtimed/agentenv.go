@@ -5,16 +5,24 @@ import (
 	"strings"
 )
 
-// dummyKey is handed to every agent so its CLI skips the local "not logged in"
-// gate; the real credential is injected by the proxy on the wire, never here.
+// dummyKey is the legacy CLI placeholder. Scoped mode replaces it with a
+// controller-issued task capability; neither is the real provider credential.
 const dummyKey = "sandboxd-proxy-injected"
 
 // agentEnv builds the spawned agent's environment: it scrubs secret-shaped vars
 // out of the inherited env, applies the task's env, and points every provider's
-// base URL at the credential-injecting proxy with a dummy key. No credential is
-// ever placed in the sandbox — the proxy holds and injects it on the wire.
+// base URL at the credential-injecting proxy. The real provider credential is
+// never placed in the sandbox; only a dummy key or a short-lived capability is.
 
 func agentEnv(agentName string, specEnv map[string]string) []string {
+	return scopedAgentEnv(agentName, specEnv, "")
+}
+
+func scopedAgentEnv(agentName string, specEnv map[string]string, taskToken string) []string {
+	key := dummyKey
+	if taskToken != "" {
+		key = taskToken
+	}
 	overlay := make(map[string]string, len(specEnv)+8)
 	for k, v := range specEnv {
 		overlay[k] = v
@@ -30,15 +38,15 @@ func agentEnv(agentName string, specEnv map[string]string) []string {
 		switch agentName {
 		case "claude-code":
 			overlay["ANTHROPIC_BASE_URL"] = base + "/anthropic"
-			overlay["ANTHROPIC_API_KEY"] = dummyKey
+			overlay["ANTHROPIC_API_KEY"] = key
 		case "opencode":
 			// opencode is multi-provider; its per-provider base URLs are written to
 			// an OPENCODE_CONFIG file by the opencode adapter (env overrides don't
 			// reach the Zen provider). Here we only supply dummy keys so the CLI
 			// skips its local login gate.
-			overlay["OPENCODE_API_KEY"] = dummyKey
-			overlay["ANTHROPIC_API_KEY"] = dummyKey
-			overlay["OPENAI_API_KEY"] = dummyKey
+			overlay["OPENCODE_API_KEY"] = key
+			overlay["ANTHROPIC_API_KEY"] = key
+			overlay["OPENAI_API_KEY"] = key
 		case "codex":
 			// codex is parked (its ChatGPT-subscription auth can't be proxied yet);
 			// the API-key path would set model_providers.openai.base_url in the

@@ -29,15 +29,17 @@ type eventSink func(evType string, data any)
 
 // task is one coding-agent run. One at a time per sandbox.
 type task struct {
-	id        string
-	prompt    string
-	agentName string
-	model     string
-	cont      bool // continue the sandbox's most recent agent session
-	env       map[string]string
-	timeout   time.Duration
-	dir       string // .runtimed/tasks/<id>
-	createdAt time.Time
+	id            string
+	prompt        string
+	agentName     string
+	model         string
+	cont          bool // continue the sandbox's most recent agent session
+	proxyToken    string
+	proxyUpstream string
+	env           map[string]string
+	timeout       time.Duration
+	dir           string // .runtimed/tasks/<id>
+	createdAt     time.Time
 
 	mu        sync.Mutex
 	startedAt time.Time
@@ -76,6 +78,7 @@ func newTask(req runtime.StartTaskRequest, tasksRoot string) (*task, error) {
 	}
 	return &task{
 		id: req.TaskID, prompt: req.Prompt, agentName: req.Agent, model: req.Model, cont: cont, env: req.Env,
+		proxyToken: req.ProxyToken, proxyUpstream: req.ProxyUpstream,
 		timeout: timeout, dir: dir, createdAt: time.Now().UTC(),
 		updatedCh: make(chan struct{}), phase: "queued", eventsW: f,
 	}, nil
@@ -250,6 +253,7 @@ func (a *app) runTask(t *task) {
 	finalMsg, usage, agentErr := ag.run(ctx, agentSpec{
 		workDir: a.appDir, prompt: t.prompt, model: t.model, env: t.env, rawLog: rl,
 		systemPrompt: sysPrompt, cont: t.cont,
+		proxyToken: t.proxyToken, proxyUpstream: t.proxyUpstream,
 	}, t.emit)
 	res.AgentMessageFinal = finalMsg
 	res.Tokens = usage

@@ -50,6 +50,7 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/metrics"
 	nginxwatch "github.com/tastyeffectco/sandboxd/control-plane/internal/nginx"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/previewhost"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/provideraccess"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/reaper"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/reconcile"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/sandboxspec"
@@ -428,11 +429,49 @@ func main() {
 	}
 
 	agentProxyURL := envDefault("SANDBOXD_AGENT_PROXY_URL", "http://sandboxd:9100")
+	var providerBroker *provideraccess.Broker
+	scoped, err := provideraccess.ScopedMode(os.Getenv("SANDBOXD_PROVIDER_ACCESS_MODE"), !authMw.Snapshot().Disabled, agentProxyURL)
+	if err != nil {
+		log.Error("provider access configuration", "err", err.Error())
+		os.Exit(1)
+	}
+	if scoped {
+		providerBroker, err = provideraccess.New(st, secretsCipher)
+		if err != nil {
+			log.Error("provider broker initialization failed")
+			os.Exit(1)
+		}
+	}
 	if proxy := authproxy.New(agentAuth, log.With("component", "authproxy")); proxy != nil && agentProxyURL != "" {
 		proxyAddr := envDefault("SANDBOXD_AGENT_PROXY_ADDR", "0.0.0.0:9100")
+		var handler http.Handler = proxy
+		if providerBroker != nil {
+			handler = providerBroker.Gateway(authproxy.NewScoped(agentAuth, log.With("component", "authproxy"), providerBroker.AuthorizeTask))
+		}
+		server := &http.Server{Addr: proxyAddr, Handler: handler}
+		var listener net.Listener
+		if providerBroker != nil {
+			// Bind synchronously in scoped mode: an occupied legacy listener must
+			// not leave a new engine falsely advertising grant enforcement.
+			server.ReadHeaderTimeout = 10 * time.Second
+			server.ReadTimeout = 30 * time.Second
+			server.IdleTimeout = 60 * time.Second
+			server.MaxHeaderBytes = 32 << 10
+			listener, err = net.Listen("tcp", proxyAddr)
+			if err != nil {
+				log.Error("auth proxy bind failed", "addr", proxyAddr)
+				os.Exit(1)
+			}
+		}
 		go func() {
 			log.Info("auth proxy listening", "addr", proxyAddr, "url", agentProxyURL)
-			if err := (&http.Server{Addr: proxyAddr, Handler: proxy}).ListenAndServe(); err != nil {
+			var err error
+			if listener != nil {
+				err = server.Serve(listener)
+			} else {
+				err = server.ListenAndServe()
+			}
+			if err != nil {
 				log.Error("auth proxy stopped", "err", err.Error())
 			}
 		}()
@@ -529,6 +568,7 @@ func main() {
 	server := &api.Server{
 		Store:             st,
 		Secrets:           secretsCipher,
+		ProviderAccess:    providerBroker,
 		Update:            updateChecker,
 		AgentAuth:         agentAuth,
 		AgentOAuth:        agentOAuth,

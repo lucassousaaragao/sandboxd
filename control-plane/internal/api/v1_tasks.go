@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/agentauth"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/audit"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/events"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/provideraccess"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/runtime"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
 )
@@ -73,6 +75,16 @@ func (s *Server) v1SubmitTask(w http.ResponseWriter, r *http.Request) {
 	// delegating to the proven internal wake path. (A private sandbox
 	// whose wake path expects a preview-token cookie is not covered —
 	// see the runtimed README "NOT implemented yet".)
+	if s.ProviderAccess != nil {
+		if !sb.AppID.Valid {
+			writeV1Err(w, http.StatusConflict, "app_required", "scoped provider tasks require an owned app")
+			return
+		}
+		if _, err := s.Store.GetAppForOwner(r.Context(), sb.AppID.String, tenantToken(r)); err != nil {
+			writeV1Err(w, http.StatusNotFound, "not_found", "no such app")
+			return
+		}
+	}
 	if sb.Status == "stopped" {
 		code, body := s.delegate(r, s.handleWakeJSON, http.MethodPost, "/wake/"+id,
 			map[string]string{"id": id}, nil)
@@ -152,9 +164,35 @@ func (s *Server) v1SubmitTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	taskID := newULID()
-	if err := s.runtimeClientFor(id).StartTask(r.Context(), runtime.StartTaskRequest{
+	start := runtime.StartTaskRequest{
 		TaskID: taskID, Prompt: req.Prompt, Agent: agent, Model: req.Model, TimeoutS: req.TimeoutS, Continue: req.Continue,
-	}); err != nil {
+	}
+	if s.ProviderAccess != nil {
+		status, statusErr := s.runtimeClientFor(id).Status(r.Context())
+		if statusErr != nil || !status.ScopedProviderTasks {
+			writeV1Err(w, http.StatusServiceUnavailable, "runtime_incompatible", "this runtime does not support scoped provider tasks; update the runtime image")
+			return
+		}
+		if agent == "opencode" && start.Model == "" {
+			start.Model = s.OpencodeModel
+		}
+		start.ProxyUpstream = provideraccess.TaskUpstream(agent, start.Model, s.OpencodeZenPath, os.Getenv("SANDBOXD_MINIMAX_REGION"))
+		ttl := runtime.DefaultTaskTimeout
+		if req.TimeoutS > 0 {
+			ttl = time.Duration(req.TimeoutS) * time.Second
+		}
+		start.ProxyToken, err = s.ProviderAccess.IssueTask(r.Context(), tenantToken(r), sb.AppID.String, id, taskID, agent, start.ProxyUpstream, ttl)
+		if err != nil {
+			writeV1Err(w, http.StatusServiceUnavailable, "provider_unavailable", "cannot authorize provider for task")
+			return
+		}
+	}
+	if err := s.runtimeClientFor(id).StartTask(r.Context(), start); err != nil {
+		if s.ProviderAccess != nil {
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+			_ = s.ProviderAccess.RevokeTask(ctx, taskID)
+			cancel()
+		}
 		if errors.Is(err, runtime.ErrTaskInProgress) {
 			writeV1Err(w, http.StatusConflict, "task_in_progress", "a task is already in progress")
 			return
@@ -173,6 +211,15 @@ func (s *Server) v1SubmitTask(w http.ResponseWriter, r *http.Request) {
 		// The task is running in runtimed but the row failed to write.
 		// The task still proceeds; GET would 404 until reconciled.
 		s.loggerFor(r, id).Error("v1 task: CreateTask failed", "task", taskID, "err", err.Error())
+		if s.ProviderAccess != nil {
+			// Do not leave an untracked scoped task using a provider until TTL.
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+			_ = s.ProviderAccess.RevokeTask(ctx, taskID)
+			_ = s.runtimeClientFor(id).CancelTask(ctx, taskID)
+			cancel()
+			writeV1Err(w, http.StatusServiceUnavailable, "task_unavailable", "could not persist task; provider access revoked")
+			return
+		}
 	} else {
 		go s.watchTask(id, taskID, req.TimeoutS)
 	}

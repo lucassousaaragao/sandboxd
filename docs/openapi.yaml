@@ -1003,6 +1003,69 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
 
+  /v1/apps/{id}/provider-grants:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    post:
+      operationId: createProviderGrant
+      tags: [apps]
+      summary: Issue a short-lived app-scoped provider capability (opt-in scoped mode)
+      description: >
+        Owner-authenticated management API, not a workload-proxy route. Requires
+        encrypted app config with explicit runtime_access or both. Returns an
+        opaque token once; never returns the provider credential. Capability
+        scoped_provider_access must be true. Anthropic API keys only, not OAuth.
+        Config changes, app deletion and explicit revocation invalidate the grant.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [provider, config_key, ttl_seconds]
+              properties:
+                provider: { type: string, enum: [anthropic] }
+                config_key: { type: string, minLength: 1, maxLength: 256 }
+                ttl_seconds: { type: integer, minimum: 60, maximum: 86400 }
+      responses:
+        "201":
+          description: One-time bearer capability; Cache-Control no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, token, expires_at, provider, base_path]
+                properties:
+                  id: { type: string }
+                  token: { type: string, description: Sensitive delegated token; never log or place in preview URLs }
+                  expires_at: { type: string, format: date-time }
+                  provider: { type: string, enum: [anthropic] }
+                  base_path: { type: string, description: Relative to the internal workload proxy, not the management API }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+
+  /v1/apps/{id}/provider-grants/{grantId}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+      - in: path
+        name: grantId
+        required: true
+        schema: { type: string }
+    delete:
+      operationId: revokeProviderGrant
+      tags: [apps]
+      summary: Revoke an owned app's provider capability (idempotent)
+      responses:
+        "204": { description: Revoked or already absent; in-flight streams may finish }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+
   /v1/apps/{id}/config:
     parameters:
       - $ref: "#/components/parameters/Id"

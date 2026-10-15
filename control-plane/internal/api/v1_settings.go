@@ -137,10 +137,11 @@ func (s *Server) v1GetSettings(w http.ResponseWriter, _ *http.Request) {
 		Agents:    v1SettingsAgents{Providers: s.Instance.AgentProviders, SystemPrompt: agentprompt.Render(agentprompt.Vars{}), DefaultModels: s.agentDefaultModels()},
 		Presets:   presets,
 		Capabilities: map[string]bool{
-			"snapshots":      s.Snapshot != nil,
-			"config_secrets": s.Secrets != nil,
-			"templates":      s.TemplatesDir != "",
-			"forward_auth":   s.Auth != nil,
+			"snapshots":              s.Snapshot != nil,
+			"config_secrets":         s.Secrets != nil,
+			"scoped_provider_access": s.ProviderAccess != nil,
+			"templates":              s.TemplatesDir != "",
+			"forward_auth":           s.Auth != nil,
 		},
 	}
 	if s.Live != nil {

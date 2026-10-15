@@ -227,13 +227,34 @@ Operator knobs for agent auth & task defaults (all optional; sensible defaults s
 Per-task, `POST /tasks` also accepts `agent`, `model`, and `continue` (tri-state —
 see [Running a task](#running-a-task)).
 
-## App-scoped provider broker candidate (not enabled)
+## App-scoped provider broker candidate (opt-in, not shipped in Desktop)
 
 `internal/provideraccess` is an in-process building block for installed agents
 such as OpenClaw. It starts no daemon/listener, has no Desktop dependencies, and
-is **not wired into the running engine or advertised by `/v1/settings`**. Existing
-coding-agent authentication is unchanged. It is ordinary MIT engine code, not a
+is enabled only by `SANDBOXD_PROVIDER_ACCESS_MODE=scoped`. Default `legacy` mode
+keeps existing coding-agent behavior. It is ordinary MIT engine code, not a
 commercial feature or a separate control-plane fork.
+
+Scoped mode requires API authentication, a valid internal proxy URL and updated
+control-plane **and runtimed** binaries. Bad mode/configuration or inability to
+bind the proxy listener aborts startup; it does not silently fall back to shared
+access. The workload listener has header/body read deadlines and hosts both the
+installed-app broker and a grant-enforcing CLI proxy. Only then does
+`GET /v1/settings` advertise `capabilities.scoped_provider_access=true`. This is
+an API availability declaration, not evidence of native OS/agent compatibility.
+
+The authenticated management API adds:
+
+- `POST /v1/apps/{id}/provider-grants` with `provider: "anthropic"`, `config_key`
+  and `ttl_seconds` (60–86400). The returned token is one-time disclosure with
+  `Cache-Control: no-store`; `base_path` is relative to the internal proxy.
+- `DELETE /v1/apps/{id}/provider-grants/{grantId}` for idempotent owner-scoped
+  revocation. Neither operation is exposed on the workload listener.
+
+There is no raw credential read endpoint and no grant-list endpoint that can
+recover a token. Renewing an installed agent's token requires the trusted
+controller to issue and deliver a replacement; automatic renewal is not yet
+implemented. Never hand management API credentials to an installed agent.
 
 The initial provider is Anthropic **API keys only**. A trusted caller supplies
 the authenticated owner's identity, app ID, app-config key and requested TTL to
@@ -266,32 +287,77 @@ explicit revocation is owner/app-scoped. Revocation prevents **new requests**,
 not completion of an already authorized stream. A stolen token remains a bearer
 capability for its one app/provider; it is not proof of container identity.
 
+### Existing coding tasks in scoped mode
+
+`v1SubmitTask` verifies the owning app before waking it and issues a separate
+capability bound to its app, sandbox, selected agent and provider route. It passes
+the token/upstream only in the internal Unix-socket runtime request; public task
+JSON cannot select them and acceptance/status metadata does not include them.
+An agent can read or emit its own delegated token; this boundary protects the
+real provider credential, not the task token from its authorized holder.
+The Claude adapter uses the delegated token
+in its SDK environment. OpenCode uses it in its private temporary provider config
+and environment; the controller-selected route wins over sandbox defaults. Real
+provider credentials stay behind the existing proxy, including Claude OAuth.
+Before issuance, the controller checks the supervisor's additive internal
+`scoped_provider_tasks` declaration. A missing/old supervisor returns
+`runtime_incompatible` before receiving a task or token; it is not silently
+retried with the legacy dummy key.
+
+Migration 0029 stores only task-token hashes. Task completion, sandbox stop/delete,
+app deletion/owner change, rejected task start and explicit revocation invalidate
+the ticket. TTL is the task timeout (default ten minutes, maximum 24 hours).
+Unexpired tickets survive engine restart while the sandbox is still running.
+The existing task watcher revokes on persisted terminal status; if that watcher
+cannot persist a result, TTL remains the upper bound. In-flight provider requests
+may finish after revocation. Tickets do not migrate a task across a stopped or
+recreated sandbox.
+
+`authproxy.NewScoped` checks authorization before credential lookup. Installed-app
+grants, dummy keys and wrong-agent/provider task tokens are rejected on shared
+CLI routes. Conversely, task tokens do not authorize installed-app routes. Both
+paths constrain methods/paths and destinations, drop caller credentials/cookies,
+bound bodies/concurrency, stream successful responses and sanitize error bodies.
+The strict CLI path allows Anthropic's `beta=true` query but not arbitrary query
+parameters. Error detail is intentionally reduced until safe provider diagnostics
+are implemented. Default legacy proxy behavior remains unchanged.
+
+CLI connections still use the existing engine-global credential store and the
+existing engine-operator trust model. This does not add per-tenant ownership to
+global provider connections, spending limits, or model-name restrictions. Installed
+agent grants use the separate app-owned encrypted config store. A shared/multi-user
+service needs a separate credential-ownership design before treating this as
+multi-tenant provider isolation.
+
 Integration/release requirements still outstanding:
 
-- The existing `authproxy.Proxy.ServeHTTP` shared routes do not require these
-  grants. Merely adding the new handler alongside that proxy leaves a bypass.
-  Managed installations must fence off shared routes and migrate/test existing
-  coding-task credentials before claiming scoped provider isolation.
-- Add owner-authenticated grant lifecycle APIs and safe renewal/delivery through
-  the existing runtime. Never place engine management tokens in agent containers
-  or grant tokens in browser preview URLs. No workload may issue its own grant.
-- Configure listener isolation and request-header/body read deadlines. The
-  handler bounds body size, but its upstream timeout begins after body reading.
+- Legacy mode still has the old shared-proxy semantics. Do not add a second
+  ungranted proxy or expose legacy credentials alongside scoped mode. The new
+  gateway is unit/integration-tested, not yet tested with real CLI/provider
+  traffic in a complete managed installation. Older runtimed binaries are
+  refused by the scoped task preflight and must be updated explicitly.
+- Complete safe installed-agent renewal/delivery and preview authentication.
+  Never place engine management tokens in agent containers or grant tokens in
+  browser preview URLs. No workload may issue its own grant.
 - Add consumer provider-selection/consent, model compatibility, billing/error
   UX, expired-record cleanup and native restart/recovery tests. A fixed proxy is
   not an approval broker for an agent's other tools or network access.
 - Reconcile migration numbering with unpublished engine candidates before
   integration. 0025–0027 are reserved by the existing Desktop runtime candidate;
-  the current migration runner supports gaps and applies 0028 on the clean base.
+  the current migration runner supports gaps and applies 0028/0029 on the clean base.
 
 Tests use real SQLite and encrypted synthetic credentials, plus a local HTTP
 streaming server. They cover ownership, permission changes, expiry, persistence,
 revocation, cross-app denial, route/header filtering, redirects, size/concurrency
-limits, corrupt ciphertext and client cancellation. Run from `control-plane`:
+limits, corrupt ciphertext and client cancellation. Additional tests exercise the
+combined gateway, task submission over a real Unix socket to a simulated runtimed,
+internal token delivery, public-response redaction and revocation on task result
+or submission rejection. CLI adapter checks are fixtures, not real inference.
+Run from `control-plane`:
 
 ```bash
 go test ./...
-go test -race ./internal/provideraccess ./internal/store ./internal/authproxy
+go test -race ./internal/provideraccess ./internal/store ./internal/authproxy ./internal/api ./cmd/runtimed
 ```
 
 These are not paid model inference, OpenClaw-to-engine integration, native

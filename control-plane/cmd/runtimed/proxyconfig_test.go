@@ -7,6 +7,33 @@ import (
 	"testing"
 )
 
+func TestScopedOpencodeConfigAndAgentEnvironment(t *testing.T) {
+	t.Setenv("RUNTIMED_ANTHROPIC_PROXY", "http://127.0.0.1:9100")
+	t.Setenv("SANDBOXD_OPENCODE_ZEN_PATH", "zengo")
+	t.Setenv("ANTHROPIC_API_KEY", "inherited-secret")
+	path, model, err := writeTaskOpencodeProxyConfig("some/model", "task-only-ticket", "zen")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model != "proxy/model" || !strings.Contains(string(data), `"apiKey":"task-only-ticket"`) || !strings.Contains(string(data), "/opencode/zen") || strings.Contains(string(data), "inherited-secret") {
+		t.Fatalf("bad config %s", data)
+	}
+	for _, agent := range []string{"opencode", "claude-code"} {
+		env := envMap(scopedAgentEnv(agent, nil, "task-only-ticket"))
+		if env["ANTHROPIC_API_KEY"] != "task-only-ticket" {
+			t.Fatalf("wrong task env: %s", agent)
+		}
+	}
+	if _, _, err := writeTaskOpencodeProxyConfig("model", "task-only-ticket", "https://evil.test"); err == nil {
+		t.Fatal("untrusted upstream accepted")
+	}
+}
+
 // The opencode proxy config defines ONE custom openai-compatible provider that
 // routes through the credential-injecting proxy with a DUMMY key, and the
 // requested model is rewritten to `proxy/<id>` — so no credential is needed in
