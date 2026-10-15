@@ -360,5 +360,36 @@ go test ./...
 go test -race ./internal/provideraccess ./internal/store ./internal/authproxy ./internal/api ./cmd/runtimed
 ```
 
-These are not paid model inference, OpenClaw-to-engine integration, native
-Windows/macOS or a security certification. Production is not changed.
+### Opt-in real agent protocol probes (2026-10-15)
+
+`scripts/probe-scoped-cli.mjs` compiles `TestLiveScopedCLI` and runs it in a
+fresh non-root, read-only-rootfs container with networking disabled, no host
+mounts and no provider credentials. Supply the exact local runtime image ID:
+
+```bash
+SANDBOXD_SCOPED_CLI_PROBE=1 \
+SANDBOXD_PROBE_RUNTIME_IMAGE=sha256:6ce923085308626fcc23586acc6bd29fef237f7b16220945cae49debd10841b6 \
+SANDBOXD_PROBE_AGENT=opencode node scripts/probe-scoped-cli.mjs
+```
+
+Run from the repository root with Go installed (or set `SANDBOXD_PROBE_GO`).
+OpenCode 1.19.0 passed actual CLI file-write/tool-result/streaming and post-revoke
+denial through the scoped gateway on Linux ARM64. Model responses are synthetic;
+there is no provider authentication or inference validation. Claude Code is
+absent from that image (manifest: install required); its probe did not pass.
+
+`TestLiveOpenClawScoped` is a second opt-in integration entry point, compiled
+with `go test -c ./internal/provideraccess`. The separate Desktop repository's
+`probe-openclaw-runtime.mjs` accepts that external test binary and migrations
+via `SANDBOXD_OPENCLAW_BROKER_BINARY` and
+`SANDBOXD_OPENCLAW_BROKER_MIGRATIONS`; nothing is copied into the product.
+OpenClaw 2026.10.3 with private Node 24.16.0 passed two actual gateway boots,
+authenticated/unauthenticated API checks, real file-write tools and streamed
+synthetic replies through the app broker, followed by grant revocation denial.
+The provider transport is replaced only inside the Go test; production still
+uses the fixed HTTPS destination. Dependency installation precedes network
+disconnection; agent execution is offline, in disposable owned storage.
+
+These probes do not test management API installation, automatic grant renewal,
+browser pairing, paid model inference, native Windows/macOS or certify security.
+Production and the published runtime bundle are unchanged.
