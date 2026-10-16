@@ -26,6 +26,7 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/manifest"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/metrics"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/preset"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/resourcebudget"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/runtime"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/snapshot"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
@@ -741,7 +742,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	startRun := time.Now()
 	var runErr error
-	containerID, runErr := s.Docker.Run(r.Context(), docker.RunSpec{
+	runSpec := docker.RunSpec{
 		Name:        "s-" + req.ID,
 		Hostname:    "s-" + req.ID,
 		Network:     s.Network,
@@ -760,7 +761,9 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		Volumes:     volumes,
 		Labels:      labels,
 		Image:       s.Image,
-	})
+	}
+	resourcebudget.Effective(s.Limits).Apply(&runSpec)
+	containerID, runErr := s.Docker.Run(r.Context(), runSpec)
 	metrics.ObserveDocker("run", startRun, &runErr)
 	if runErr != nil {
 		abort("docker.Run: " + runErr.Error())
@@ -778,7 +781,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	// memory.high is a soft cgroup-v2 throttle written directly to the
 	// host cgroup fs. In the portable OSS build it is OFF by default
 	// (SetMemoryHigh=false) because it needs host cgroup access the
-	// control-plane container may not have; the hard --memory=10g
+	// control-plane container may not have; the configured hard --memory
 	// ceiling from the RunSpec still applies. When enabled but the write
 	// fails, we log and continue rather than failing the whole create —
 	// a missing soft throttle must not block a working sandbox.

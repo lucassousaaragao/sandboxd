@@ -25,6 +25,7 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/loopback"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/metrics"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/provideraccess"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/resourcebudget"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/secrets"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/snapshot"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
@@ -35,6 +36,7 @@ import (
 
 // Server bundles the collaborators the handlers need.
 type Server struct {
+	Limits *resourcebudget.Limits
 	Store  *store.Store
 	Docker *docker.Client
 	// Upgrade runs in-place upgrades via a detached upgrader container

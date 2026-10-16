@@ -98,6 +98,9 @@ services:
       # for gVisor sandboxes (netstack can't reach Docker's embedded DNS).
       SANDBOXD_RUNTIME: ${SANDBOXD_RUNTIME:-}
       SANDBOXD_DNS: ${SANDBOXD_DNS:-}
+      SANDBOXD_SANDBOX_MEMORY_MIB: ${SANDBOXD_SANDBOX_MEMORY_MIB:-}
+      SANDBOXD_SANDBOX_CPU_MILLICORES: ${SANDBOXD_SANDBOX_CPU_MILLICORES:-}
+      SANDBOXD_SANDBOX_PIDS_LIMIT: ${SANDBOXD_SANDBOX_PIDS_LIMIT:-}
       SANDBOXD_DATA_DIR: ${SANDBOXD_DATA_DIR:-/var/lib/sandboxd}
       # In-place upgrades from the console: host path of this checkout (set by
       # install.sh) and the upgrader image built alongside the control plane.

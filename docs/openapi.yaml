@@ -1727,6 +1727,14 @@ components:
           properties:
             storage_mode: { type: string }
             base_image: { type: string }
+            resource_limits:
+              type: object
+              readOnly: true
+              description: "Operator per-container policy for new/recreated sandboxes, advertised by runtime_resource_limits. Running containers are not migrated. Not an aggregate budget or disk quota."
+              properties:
+                memory_mib: { type: integer, minimum: 256, maximum: 65536 }
+                cpu_millicores: { type: integer, minimum: 0, maximum: 64000, description: "0 preserves unlimited CPU; otherwise 100..64000." }
+                pids: { type: integer, minimum: 64, maximum: 65536 }
         lifecycle:
           type: object
           properties:

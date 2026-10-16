@@ -46,6 +46,7 @@ type RunSpec struct {
 	CapDrop     []string // --cap-drop=ALL (passed once per entry)
 	SecurityOpt []string // --security-opt=no-new-privileges
 	CPUShares   int      // --cpu-shares=100
+	CPULimit    string   // --cpus (validated operator hard ceiling; empty preserves legacy behavior)
 	Memory      string   // --memory=10g
 	MemorySwap  string   // --memory-swap=10g
 	PidsLimit   int      // --pids-limit=1024
@@ -87,6 +88,9 @@ func (c *Client) Run(ctx context.Context, spec RunSpec) (string, error) {
 	}
 	if spec.CPUShares > 0 {
 		args = append(args, fmt.Sprintf("--cpu-shares=%d", spec.CPUShares))
+	}
+	if spec.CPULimit != "" {
+		args = append(args, "--cpus="+spec.CPULimit)
 	}
 	if spec.Memory != "" {
 		args = append(args, "--memory="+spec.Memory)
@@ -132,6 +136,12 @@ func (c *Client) Run(ctx context.Context, spec RunSpec) (string, error) {
 // about. Fields can be added as needed; unknown fields are ignored
 // by encoding/json.
 type ContainerJSON struct {
+	HostConfig *struct {
+		Memory     int64  `json:"Memory"`
+		MemorySwap int64  `json:"MemorySwap"`
+		NanoCPUs   int64  `json:"NanoCpus"`
+		PidsLimit  *int64 `json:"PidsLimit"`
+	} `json:"HostConfig"`
 	ID    string `json:"Id"`
 	State struct {
 		Status  string `json:"Status"`

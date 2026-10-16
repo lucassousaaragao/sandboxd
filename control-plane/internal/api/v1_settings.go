@@ -16,6 +16,7 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/agentprompt"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/audit"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/preset"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/resourcebudget"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
 )
 
@@ -77,8 +78,9 @@ type v1SettingsAuth struct {
 	Enabled bool `json:"enabled"`
 }
 type v1SettingsRuntime struct {
-	StorageMode string `json:"storage_mode"`
-	BaseImage   string `json:"base_image"`
+	ResourceLimits resourcebudget.Limits `json:"resource_limits"`
+	StorageMode    string                `json:"storage_mode"`
+	BaseImage      string                `json:"base_image"`
 }
 type v1SettingsLife struct {
 	IdleReapEnabled      bool `json:"idle_reap_enabled"`
@@ -131,12 +133,13 @@ func (s *Server) v1GetSettings(w http.ResponseWriter, _ *http.Request) {
 			PreviewEntrypoint: s.PreviewEntrypoint,
 		},
 		Auth:      v1SettingsAuth{Enabled: s.Instance.AuthEnabled},
-		Runtime:   v1SettingsRuntime{StorageMode: storageMode, BaseImage: s.Image},
+		Runtime:   v1SettingsRuntime{StorageMode: storageMode, BaseImage: s.Image, ResourceLimits: resourcebudget.Effective(s.Limits)},
 		Lifecycle: s.lifecycleView(),
 		Egress:    v1SettingsEgress{Mode: egressMode},
 		Agents:    v1SettingsAgents{Providers: s.Instance.AgentProviders, SystemPrompt: agentprompt.Render(agentprompt.Vars{}), DefaultModels: s.agentDefaultModels()},
 		Presets:   presets,
 		Capabilities: map[string]bool{
+			"runtime_resource_limits":   true,
 			"app_sandbox_idle_policy":   true,
 			"snapshots":                 s.Snapshot != nil,
 			"config_secrets":            s.Secrets != nil,

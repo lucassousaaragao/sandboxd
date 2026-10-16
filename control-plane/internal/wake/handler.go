@@ -21,6 +21,7 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/idlock"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/metrics"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/previewhost"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/resourcebudget"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/sandboxspec"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
 )
@@ -35,6 +36,7 @@ import (
 //     The path-value provides the id; Accept: application/json (or
 //     no Host that matches preview shape) → JSON.
 type Handler struct {
+	Limits *resourcebudget.Limits
 	Store  *store.Store
 	Docker *docker.Client
 	Hosts  previewhost.Scheme
@@ -327,7 +329,19 @@ func (h *Handler) serve(r *http.Request, w http.ResponseWriter, id, port string,
 			stale = true
 			log.Info("wake: container missing — recreating from the stored row")
 		case ierr != nil:
+			if h.Limits != nil {
+				wf.err = ierr
+				h.respondError(w, id, "resource_inspect_failed", isHTML)
+				return
+			}
 			log.Warn("wake: pre-start inspect failed (continuing)", "err", ierr.Error())
+		case h.Limits != nil && cur.HostConfig == nil:
+			wf.err = errors.New("container resource configuration unavailable")
+			h.respondError(w, id, "resource_inspect_failed", isHTML)
+			return
+		case h.Limits != nil && !cur.State.Running && !h.Limits.Matches(cur):
+			stale = true
+			log.Info("wake: stopped container resource limits changed — recreating")
 		case sandboxspec.NeedsRecreate(cur.Config.Image, h.Image):
 			stale = true
 			log.Info("wake: container built from an older image — recreating",

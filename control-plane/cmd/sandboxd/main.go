@@ -53,6 +53,7 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/provideraccess"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/reaper"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/reconcile"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/resourcebudget"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/sandboxspec"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/secrets"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/snapshot"
@@ -122,6 +123,18 @@ func main() {
 	}
 
 	log := logging.NewLogger()
+	limits, limitsErr := resourcebudget.FromEnv(os.Getenv)
+	if limitsErr != nil {
+		log.Error("invalid sandbox resource limits", "err", limitsErr.Error())
+		os.Exit(2)
+	}
+	// Defaults preserve existing limits and wake behavior. Explicit operator
+	// policy also checks stopped containers before start; running apps are not
+	// interrupted or silently migrated when the daemon configuration changes.
+	var configuredLimits *resourcebudget.Limits
+	if os.Getenv("SANDBOXD_SANDBOX_MEMORY_MIB") != "" || os.Getenv("SANDBOXD_SANDBOX_CPU_MILLICORES") != "" || os.Getenv("SANDBOXD_SANDBOX_PIDS_LIMIT") != "" {
+		configuredLimits = &limits
+	}
 
 	addr := envDefault("SANDBOXD_ADDR", defaultListenAddr)
 	image := envDefault("SANDBOXD_IMAGE", defaultImage)
@@ -391,6 +404,7 @@ func main() {
 	wakeHandler.Audit = auditLog
 	wakeHandler.ForwardAuthDenyMode = denyMode
 	wakeHandler.SetMemoryHigh = setMemoryHigh
+	wakeHandler.Limits = configuredLimits
 
 	// app_config/secrets encryption: SANDBOXD_SECRETS_KEY (base64 32
 	// bytes) or an auto-generated 0600 keyfile under the data dir.
@@ -541,6 +555,7 @@ func main() {
 	wakeHandler.Image = image
 	wakeHandler.Recreate = func(ctx context.Context, sb *store.Sandbox) error {
 		spec := sandboxspec.Build(sb, sandboxspec.Env{
+			Limits:            configuredLimits,
 			Image:             image,
 			Network:           network,
 			Userns:            userns,
@@ -566,6 +581,7 @@ func main() {
 	}
 
 	server := &api.Server{
+		Limits:            configuredLimits,
 		Store:             st,
 		Secrets:           secretsCipher,
 		ProviderAccess:    providerBroker,

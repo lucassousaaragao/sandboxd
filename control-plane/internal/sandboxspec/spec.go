@@ -13,6 +13,7 @@ package sandboxspec
 import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/docker"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/previewhost"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/resourcebudget"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/traefik"
 	"strings"
@@ -22,6 +23,7 @@ import (
 // mirror the values the create path passes; keeping them in one struct lets
 // the recreate path produce an identical container.
 type Env struct {
+	Limits            *resourcebudget.Limits
 	Image             string // current base image (the whole point: may be newer)
 	Network           string
 	Userns            string
@@ -90,7 +92,7 @@ func Build(sb *store.Sandbox, e Env) docker.RunSpec {
 	}
 	labels := traefik.LabelsFor(e.Hosts(), sb.ID, ports, visibility, e.PreviewEntrypoint, e.PreviewTLS)
 
-	return docker.RunSpec{
+	spec := docker.RunSpec{
 		Name:        name,
 		Hostname:    name,
 		Network:     e.Network,
@@ -110,6 +112,8 @@ func Build(sb *store.Sandbox, e Env) docker.RunSpec {
 		Labels:      labels,
 		Image:       e.Image,
 	}
+	resourcebudget.Effective(e.Limits).Apply(&spec)
+	return spec
 }
 
 // NeedsRecreate reports whether a container should be replaced before start:
