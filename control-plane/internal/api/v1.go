@@ -39,6 +39,7 @@ type v1Preview struct {
 type v1Sandbox struct {
 	ID           string      `json:"id"`
 	Status       string      `json:"status"`
+	IdlePolicy   string      `json:"idle_policy"`
 	Preview      v1Preview   `json:"preview"`
 	Processes    []v1Process `json:"processes"`
 	ActiveTaskID string      `json:"active_task_id,omitempty"`
@@ -161,11 +162,15 @@ func (s *Server) previewURL(id string, webPort int) string {
 // in the live runtime/preview state from runtimed when reachable.
 func (s *Server) v1SandboxFromRow(r *http.Request, sb *store.Sandbox) v1Sandbox {
 	out := v1Sandbox{
-		ID:        sb.ID,
-		Status:    sb.Status,
-		Template:  defaultTemplate,
-		CreatedAt: sb.CreatedAt.UTC().Format(time.RFC3339),
-		UpdatedAt: sb.UpdatedAt.UTC().Format(time.RFC3339),
+		ID:         sb.ID,
+		Status:     sb.Status,
+		IdlePolicy: sb.IdlePolicy,
+		Template:   defaultTemplate,
+		CreatedAt:  sb.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:  sb.UpdatedAt.UTC().Format(time.RFC3339),
+	}
+	if out.IdlePolicy == "" {
+		out.IdlePolicy = "sleep"
 	}
 	_, mnt := s.Loopback.Paths(sb.ID)
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)

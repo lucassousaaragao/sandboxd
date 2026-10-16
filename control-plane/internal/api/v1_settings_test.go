@@ -70,6 +70,9 @@ func TestV1SettingsShapeAndNoSecretLeak(t *testing.T) {
 		t.Errorf("preview_base = %v", got)
 	}
 	caps := m["capabilities"].(map[string]any)
+	if caps["app_sandbox_idle_policy"] != true {
+		t.Error("capabilities.app_sandbox_idle_policy should advertise app-create policy support")
+	}
 	if caps["config_secrets"] != true {
 		t.Error("capabilities.config_secrets should be true (cipher set)")
 	}

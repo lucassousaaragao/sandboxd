@@ -836,7 +836,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "post-create get: "+err.Error())
 		return
 	}
-	createDetail := map[string]any{"visibility": visibility, "ports": req.Ports}
+	createDetail := map[string]any{"visibility": visibility, "ports": req.Ports, "idle_policy": idlePolicy}
 	if req.Template != "" {
 		createDetail["template"] = req.Template
 	}

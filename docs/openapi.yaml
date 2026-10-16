@@ -572,12 +572,18 @@ paths:
                 template: { type: string, description: "Template name; omit for react-standard, 'blank' for empty." }
                 runtime_preset: { type: string, description: "Runtime preset id (overrides the app default + template)." }
                 ports: { type: array, items: { type: integer }, default: [3000] }
+                idle_policy:
+                  type: string
+                  enum: [sleep, always_on]
+                  default: sleep
+                  description: "Requires capabilities.app_sandbox_idle_policy. always_on bypasses idle/moderate-pressure reaping, not explicit stop, critical memory pressure, host sleep or credential expiry. Applies to this newly created sandbox only."
       responses:
         "201":
           description: Created
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Sandbox" }
+        "400": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409":
           description: The app already has a live sandbox.
@@ -1845,6 +1851,7 @@ components:
       properties:
         id: { type: string }
         status: { type: string, enum: [creating, running, stopped, error] }
+        idle_policy: { type: string, enum: [sleep, always_on], description: "Persisted sandbox lifecycle policy. Older engines may omit this field." }
         template: { type: string }
         preview: { $ref: "#/components/schemas/Preview" }
         processes:

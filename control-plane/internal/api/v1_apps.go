@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"time"
@@ -323,7 +324,8 @@ type v1CreateAppSandboxReq struct {
 	Template      string  `json:"template,omitempty"`
 	Ports         []int   `json:"ports,omitempty"`
 	RuntimePreset string  `json:"runtime_preset,omitempty"`
-	Image         *string `json:"image,omitempty"` // rejected — see errPerAppImage
+	IdlePolicy    string  `json:"idle_policy,omitempty"` // existing reaper policy; defaults to sleep
+	Image         *string `json:"image,omitempty"`       // rejected — see errPerAppImage
 }
 
 // v1CreateAppSandbox — POST /v1/apps/{id}/sandbox. Creates the app's
@@ -348,10 +350,23 @@ func (s *Server) v1CreateAppSandbox(w http.ResponseWriter, r *http.Request) {
 
 	var req v1CreateAppSandboxReq
 	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&req) // body optional
+		decoder := json.NewDecoder(r.Body)
+		err := decoder.Decode(&req) // body optional; malformed bodies are not empty bodies
+		if err != nil && !errors.Is(err, io.EOF) {
+			writeV1Err(w, http.StatusBadRequest, "invalid_request", "invalid json")
+			return
+		}
+		if err == nil && !errors.Is(decoder.Decode(&struct{}{}), io.EOF) {
+			writeV1Err(w, http.StatusBadRequest, "invalid_request", "expected one json object")
+			return
+		}
 	}
 	if req.Image != nil {
 		writeV1Err(w, http.StatusBadRequest, "invalid_request", errPerAppImage)
+		return
+	}
+	if req.IdlePolicy != "" && req.IdlePolicy != "sleep" && req.IdlePolicy != "always_on" {
+		writeV1Err(w, http.StatusBadRequest, "invalid_request", "idle_policy must be 'sleep' or 'always_on'")
 		return
 	}
 	ports := req.Ports
@@ -359,8 +374,9 @@ func (s *Server) v1CreateAppSandbox(w http.ResponseWriter, r *http.Request) {
 		ports = []int{3000}
 	}
 	createBody := map[string]any{
-		"ports":  ports,
-		"app_id": app.ID,
+		"ports":       ports,
+		"app_id":      app.ID,
+		"idle_policy": req.IdlePolicy,
 		"external": map[string]string{
 			"user_id":    app.ExternalUserID.String,
 			"project_id": app.ExternalProjectID.String,

@@ -137,6 +137,7 @@ func (s *Server) v1GetSettings(w http.ResponseWriter, _ *http.Request) {
 		Agents:    v1SettingsAgents{Providers: s.Instance.AgentProviders, SystemPrompt: agentprompt.Render(agentprompt.Vars{}), DefaultModels: s.agentDefaultModels()},
 		Presets:   presets,
 		Capabilities: map[string]bool{
+			"app_sandbox_idle_policy":   true,
 			"snapshots":                 s.Snapshot != nil,
 			"config_secrets":            s.Secrets != nil,
 			"scoped_provider_access":    s.ProviderAccess != nil,

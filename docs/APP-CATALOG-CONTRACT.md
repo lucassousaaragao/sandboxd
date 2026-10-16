@@ -100,6 +100,21 @@ build:
 Step 5 matters: until the manifest is adopted, the **template dev server holds :3000** and answers 200
 with a plausible page — clients must never read that as success (QA finding #2).
 
+For a background service, first check `GET /v1/settings` for
+`capabilities.app_sandbox_idle_policy: true`. Then step 2 may send
+`{"template":"blank","idle_policy":"always_on"}`. Verify the persisted
+`idle_policy` in `GET /v1/sandboxes/{id}` before claiming the service is exempt
+from idle sleep; older app-create handlers silently ignore this field. Omitting
+it preserves the ordinary `sleep` default. Malformed/invalid create bodies are
+rejected without provisioning a sandbox. This is a per-sandbox creation option,
+not an update to an existing app/runtime or a global reaper setting.
+
+The existing `always_on` policy still permits explicit Stop and critical-memory
+emergency stops. It does not restart stopped sandboxes, keep the computer/VM
+awake, or renew model credentials. Such services consume memory while idle;
+the client must explain this before installation. No additional service, schema
+or commercial license is needed, and existing apps are unchanged.
+
 ## 5. Rules for recipe authors (distilled from 25 QA chunks)
 
 1. **Idempotent installs** with a guard file; every step must tolerate re-run (retry = restart).
