@@ -613,6 +613,9 @@ func main() {
 	// the browser preview path and stays unauthenticated; a private
 	// sandbox's stopped-wake is gated inside the wake handler itself.
 	apiMux := authMw.Wrap(server.Handler())
+	if os.Getenv("LUWEI_SESSION_ENFORCEMENT") == "enabled" {
+		apiMux = server.LuweiSessionGuard(os.Getenv("SANDBOXD_SESSION_HMAC_SECRET"), apiMux)
+	}
 	root := hostDispatch(wakeHandler, apiMux, log)
 	root = logging.Middleware(log, root)
 
