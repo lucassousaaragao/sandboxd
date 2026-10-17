@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -42,5 +44,49 @@ func TestLuweiSessionGuardFailClosed(t *testing.T) {
 				t.Fatalf("got %d want %d", w.Code, tc.code)
 			}
 		})
+	}
+}
+
+func TestLuweiCrossSessionIsolation(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, "file:"+t.TempDir()+"/test.db?_fk=1", "../../migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	for _, b := range []store.LuweiSessionBinding{
+		{SandboxID: "box-a", SessionID: "session-a", UserID: "user-a", ProjectID: "project-a", WorkspaceID: "ws-a"},
+		{SandboxID: "box-b", SessionID: "session-b", UserID: "user-b", ProjectID: "project-b", WorkspaceID: "ws-b"},
+	} {
+		if err := st.BindLuweiSession(ctx, b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	server := &Server{Store: st}
+	called := 0
+	guard := server.LuweiSessionGuard("secret", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called++; w.WriteHeader(204) }))
+	cases := []struct {
+		name, path, session string
+		status              int
+	}{
+		{"owner A", "/sandbox/box-a/exec", "session-a", 204},
+		{"owner B", "/sandbox/box-b/exec", "session-b", 204},
+		{"A accesses B", "/sandbox/box-b/exec", "session-a", 403},
+		{"B accesses A", "/sandbox/box-a/exec", "session-b", 403},
+		{"missing binding", "/sandbox/unknown/exec", "session-a", 403},
+		{"v1 cross session", "/v1/sandboxes/box-b/stop", "session-a", 403},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := luweiSignedRequest("POST", tc.path, tc.session, "secret")
+			rec := httptest.NewRecorder()
+			guard.ServeHTTP(rec, req)
+			if rec.Code != tc.status {
+				t.Fatalf("got %d want %d", rec.Code, tc.status)
+			}
+		})
+	}
+	if called != 2 {
+		t.Fatalf("unexpected allowed operations: %d", called)
 	}
 }
