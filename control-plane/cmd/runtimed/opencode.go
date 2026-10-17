@@ -395,6 +395,24 @@ func (o *opencodeAgent) run(ctx context.Context, spec agentSpec, emit eventSink)
 		return "", usage, fmt.Errorf("start opencode: %w", err)
 	}
 	pgid := cmd.Process.Pid
+	startedAt := time.Now()
+	// Only fixed operational metadata. Never log prompts, URLs, provider tokens
+	// or full process environment in the per-task diagnostic stream.
+	o.log.Info("opencode agent launched", "mode", "native_or_proxy", "proxy_enabled", cfgPath != "", "model_selected", model != "")
+	watchDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-watchDone:
+				return
+			case <-ticker.C:
+				o.log.Info("opencode agent awaiting completion", "elapsed_seconds", int(time.Since(startedAt).Seconds()))
+			}
+		}
+	}()
+	defer close(watchDone)
 
 	// ctx cancellation (cancel or timeout) → kill the process group.
 	finished := make(chan struct{})
@@ -439,6 +457,10 @@ func (o *opencodeAgent) run(ctx context.Context, spec agentSpec, emit eventSink)
 	//      the case where the error event shape changes underneath us.
 	switch {
 	case ctx.Err() != nil:
+		o.log.Warn("opencode agent interrupted", "reason", ctx.Err().Error(),
+			"elapsed_seconds", int(time.Since(startedAt).Seconds()),
+			"saw_text", pr.SawText, "saw_tool", pr.SawTool,
+			"usage_tokens", pr.Usage.Total)
 		return pr.FinalMessage, pr.Usage, nil
 	case pr.APIErr != "":
 		return pr.FinalMessage, pr.Usage, fmt.Errorf("agent error: %s", pr.APIErr)
