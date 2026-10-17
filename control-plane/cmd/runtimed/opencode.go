@@ -348,7 +348,14 @@ func (o *opencodeAgent) run(ctx context.Context, spec agentSpec, emit eventSink)
 	// file: a custom openai-compatible "proxy" provider carrying a dummy key (the
 	// proxy injects the real one). When it applies, the model is rewritten to
 	// `proxy/<id>` so the run uses that provider. No credential enters the sandbox.
-	cfgPath, proxyModel, cfgErr := writeOpencodeProxyConfig(model)
+	brokerTicket := spec.env["LUWEI_BROKER_TICKET"]
+	var cfgPath, proxyModel string
+	var cfgErr error
+	if brokerTicket != "" {
+		cfgPath, proxyModel, cfgErr = writeLuweiBrokerConfig(model, brokerTicket)
+	} else {
+		cfgPath, proxyModel, cfgErr = writeOpencodeProxyConfig(model)
+	}
 	if cfgErr != nil {
 		return "", usage, fmt.Errorf("configure opencode proxy: %w", cfgErr)
 	}
@@ -376,7 +383,15 @@ func (o *opencodeAgent) run(ctx context.Context, spec agentSpec, emit eventSink)
 	// Phase 10B — scrub secret-shaped vars and point HOME at THIS agent's
 	// mounted auth dir (/run/agent-auth/opencode), if any. Credentials come from
 	// files under HOME, never from inherited container env.
-	cmd.Env = agentEnv(o.name(), spec.env)
+	// Never inherit the broker capability as an environment variable: it is
+	// used only as the custom provider's authorization header in OPENCODE_CONFIG.
+	forwardedEnv := make(map[string]string, len(spec.env))
+	for k, v := range spec.env {
+		if k != "LUWEI_BROKER_TICKET" {
+			forwardedEnv[k] = v
+		}
+	}
+	cmd.Env = agentEnv(o.name(), forwardedEnv)
 	if cfgPath != "" {
 		cmd.Env = append(cmd.Env, "OPENCODE_CONFIG="+cfgPath)
 	}
@@ -395,6 +410,24 @@ func (o *opencodeAgent) run(ctx context.Context, spec agentSpec, emit eventSink)
 		return "", usage, fmt.Errorf("start opencode: %w", err)
 	}
 	pgid := cmd.Process.Pid
+	startedAt := time.Now()
+	// Only fixed operational metadata. Never log prompts, URLs, provider tokens
+	// or full process environment in the per-task diagnostic stream.
+	o.log.Info("opencode agent launched", "mode", "native_or_proxy", "proxy_enabled", cfgPath != "", "model_selected", model != "")
+	watchDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-watchDone:
+				return
+			case <-ticker.C:
+				o.log.Info("opencode agent awaiting completion", "elapsed_seconds", int(time.Since(startedAt).Seconds()))
+			}
+		}
+	}()
+	defer close(watchDone)
 
 	// ctx cancellation (cancel or timeout) → kill the process group.
 	finished := make(chan struct{})
@@ -439,6 +472,10 @@ func (o *opencodeAgent) run(ctx context.Context, spec agentSpec, emit eventSink)
 	//      the case where the error event shape changes underneath us.
 	switch {
 	case ctx.Err() != nil:
+		o.log.Warn("opencode agent interrupted", "reason", ctx.Err().Error(),
+			"elapsed_seconds", int(time.Since(startedAt).Seconds()),
+			"saw_text", pr.SawText, "saw_tool", pr.SawTool,
+			"usage_tokens", pr.Usage.Total)
 		return pr.FinalMessage, pr.Usage, nil
 	case pr.APIErr != "":
 		return pr.FinalMessage, pr.Usage, fmt.Errorf("agent error: %s", pr.APIErr)

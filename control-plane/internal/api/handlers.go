@@ -40,6 +40,7 @@ type externalReq struct {
 	UserID      string `json:"user_id"`
 	ProjectID   string `json:"project_id"`
 	WorkspaceID string `json:"workspace_id"`
+	SessionID   string `json:"session_id,omitempty"`
 }
 
 type createReq struct {
@@ -177,6 +178,7 @@ type sandboxResp struct {
 	ExternalUserID      string `json:"external_user_id,omitempty"`
 	ExternalProjectID   string `json:"external_project_id,omitempty"`
 	ExternalWorkspaceID string `json:"external_workspace_id,omitempty"`
+	ExternalSessionID   string `json:"external_session_id,omitempty"`
 	Visibility          string `json:"visibility"`
 	IdlePolicy          string `json:"idle_policy"`
 }
@@ -538,6 +540,10 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		ExternalWorkspaceID: nullStr(req.External.WorkspaceID),
 		AppID:               nullStr(req.AppID),
 	}
+	if verifiedLuweiSession(r.Context()) != "" && req.External.SessionID != verifiedLuweiSession(r.Context()) {
+		writeErr(w, http.StatusForbidden, "session identity mismatch")
+		return
+	}
 	if err := s.Store.Create(r.Context(), sb); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeErr(w, http.StatusConflict, "id collision (race)")
@@ -545,6 +551,14 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 		writeErr(w, http.StatusInternalServerError, "store.Create: "+err.Error())
 		return
+	}
+	if sessionID := verifiedLuweiSession(r.Context()); sessionID != "" {
+		err := s.Store.BindLuweiSession(r.Context(), store.LuweiSessionBinding{SandboxID: req.ID, SessionID: sessionID, UserID: req.External.UserID, ProjectID: req.External.ProjectID, WorkspaceID: req.External.WorkspaceID})
+		if err != nil {
+			_ = s.Store.MarkError(r.Context(), req.ID, "session binding failed")
+			writeErr(w, http.StatusConflict, "session binding failed")
+			return
+		}
 	}
 	_ = metrics.RefreshSandboxGauge(r.Context(), s.Store)
 	s.recordEvent(r, events.Event{Type: events.SandboxCreateStarted, Severity: events.SeverityInfo,
@@ -848,7 +862,9 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	})
 	s.recordEvent(r, events.Event{Type: events.SandboxStarted, Severity: events.SeverityInfo,
 		Message: "Sandbox started", AppID: req.AppID, SandboxID: req.ID})
-	writeJSON(w, http.StatusCreated, toRespRow(fresh))
+	responseRow := toRespRow(fresh)
+	responseRow.ExternalSessionID = verifiedLuweiSession(r.Context())
+	writeJSON(w, http.StatusCreated, responseRow)
 }
 
 // --- GET /sandbox/{id} ----------------------------------------------
