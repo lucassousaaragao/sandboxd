@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/agentauth"
@@ -47,6 +48,8 @@ type v1TaskSubmitReq struct {
 	// "opencode/claude-sonnet-4-5"), claude an alias/id ("sonnet"). Empty = the
 	// agent's default. Unknown/unavailable models fail the task at the agent.
 	Model string `json:"model,omitempty"`
+	// A signed, expiring Luwei capability (never a provider API key).
+	BrokerTicket string `json:"broker_ticket,omitempty"`
 	// TimeoutS sets the maximum task runtime in seconds.
 	// 0 or omitted means use the runtimed default (10m).
 	TimeoutS int `json:"timeout_s,omitempty"`
@@ -133,6 +136,15 @@ func (s *Server) v1SubmitTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Explicit broker use is limited to OpenCode and a model selected through
+	// the Luwei Harness. Never accept a raw credential in the task body.
+	if req.BrokerTicket != "" && (agent != "opencode" ||
+		!strings.HasPrefix(req.Model, "openai/") ||
+		len(req.BrokerTicket) > 4096 ||
+		!verifyLuweiBrokerCapability(req.BrokerTicket, id, r.Header.Get("X-Luwei-Session-ID"), req.Model)) {
+		writeV1Err(w, http.StatusForbidden, "invalid_broker_capability", "signed broker capability required")
+		return
+	}
 	// Model precedence when the caller didn't pick one (req.Model == ""):
 	//   1. the operator's per-agent default model (Settings → AI Agents), then
 	//   2. opencode's zero-friction free tier (only when nothing is connected).
@@ -154,6 +166,7 @@ func (s *Server) v1SubmitTask(w http.ResponseWriter, r *http.Request) {
 	taskID := newULID()
 	if err := s.runtimeClientFor(id).StartTask(r.Context(), runtime.StartTaskRequest{
 		TaskID: taskID, Prompt: req.Prompt, Agent: agent, Model: req.Model, TimeoutS: req.TimeoutS, Continue: req.Continue,
+		Env: brokerTaskEnv(req.BrokerTicket),
 	}); err != nil {
 		if errors.Is(err, runtime.ErrTaskInProgress) {
 			writeV1Err(w, http.StatusConflict, "task_in_progress", "a task is already in progress")
